@@ -6,7 +6,7 @@
 - **Customizable Pipelines**: Easily define datasets, models, and training configurations.
 - **Task Support**: Pre-built scripts for classification (and soon segmentation!).
 - **PyTorch Lightning Powered**: Simplifies training loops and supports distributed training.
-- **Logging and Monitoring**: Integrated with TensorBoard and Weights & Biases.
+- **Logging and Monitoring**: Integrated with Weights & Biases.
 - **Extensible Design**: Add custom datasets, models, or loss functions with ease.
 
 ---

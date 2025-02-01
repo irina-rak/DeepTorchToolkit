@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "deeptorchtoolkit"
+version = "0.1.0"
+description = "A lightweight, modular tool designed to simplify building deep learning pipelines. It provides customizable scripts that handle supervised learning tasks, all powered by PyTorch Lightning."
+authors = ["Irina Rakotoarisedy"]
+license = "GPL-3.0 license"
+readme = "README.md"
+packages = [
+    {include = "src"}
+]
+
+[tool.poetry.scripts]
+deeptoolkit = "src.main:app"
+
+[tool.poetry.dependencies]
+python = ">=3.11, <3.12"
+trogon = "^0.6.0"
+typer = "^0.15.1"
+lightning = "^2.5.0.post0"
+omegaconf = "^2.3.0"
+wandb = "^0.19.5"
+torchvision = "^0.21.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
