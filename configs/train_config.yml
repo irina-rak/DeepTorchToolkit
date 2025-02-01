@@ -1,0 +1,41 @@
+root_dir: ${oc.env:PWD}
+experiment_name: chest_xray
+
+trainer:
+  accelerator: gpu
+  devices:
+    - 0
+  max_epochs: 70
+  enable_checkpointing: True
+
+wandb:
+  # Uncomment the following lines and add your own key here when the key is not in the environment
+  # login:
+  #   key: "your_key_here"
+  #   verify: True
+  #   relogin: True
+  init:
+    entity: "rakotoarisedy-irina"
+    project: "CXR_classification"
+    group: ${experiment_name}
+    name: "global_model_cxr_unbalanced_all_classes"
+
+logs:
+  subdir: ${root_dir}/experiments/${experiment_name}/
+
+model:
+  name: resnet18
+  config:
+    input_shape: 1
+    n_classes: 4
+    lr: 0.001
+
+data:
+  name: chest_xray
+  config:
+    dir_train: None
+    dir_val: None
+    dir_test: ${root_dir}/datasets/chest_xray_covid/csv_splits/COVID-19_Radiography_Dataset_test.csv
+    batch_size: 16
+    augment: True
+    num_workers: 11
