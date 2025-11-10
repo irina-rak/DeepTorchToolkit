@@ -20,7 +20,7 @@ def test_cli_help():
 def test_cli_train_help():
     """Test that train subcommand help works."""
     runner = CliRunner()
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(app, ["train", "--help"])
     assert result.exit_code == 0
     assert "config" in result.output.lower()
     assert "print-config" in result.output.lower()
