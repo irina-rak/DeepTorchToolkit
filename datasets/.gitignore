@@ -1,0 +1,4 @@
+# Data are large files, we don't want to track them in git
+*
+
+!.gitignore

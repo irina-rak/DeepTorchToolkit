@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deeptorchtoolkit"
+version = "0.1.0"
+description = "DeepTorchToolkit (DTT): A clean, extensible PyTorch Lightning + MONAI + W&B template for medical imaging."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "DeepTorchToolkit Authors" }]
+keywords = ["pytorch", "lightning", "monai", "medical-imaging", "template", "wandb"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "lightning>=2.4.0",
+  "typer>=0.12.0",
+  "pydantic>=2.4",
+  "omegaconf>=2.3.0",
+  "rich>=13.7",
+  "numpy>=1.24",
+  "Pillow>=10.0",
+  "wandb>=0.17.0",
+  "pandas>=2.3.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourname/DeepTorchToolkit"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.6",
+  "black>=24.8",
+  "pre-commit>=3.7",
+  "mypy>=1.8",
+  "types-PyYAML>=6.0.12.20240917",
+]
+torch = [
+  "torch>=2.2",
+  "torchvision>=0.17",
+]
+monai = [
+  "monai>=1.4.0",
+  "nibabel>=5.2",
+]
+all = [
+  "deeptorchtoolkit[dev,torch,monai]",
+]
+
+[project.scripts]
+dtt = "dtt.cli.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dtt*"]
+
+[tool.setuptools.package-data]
+"dtt.config" = ["*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+lint.select = [
+  "E", "F", "I", "B", "UP", "N", "C4",
+]
+lint.ignore = [
+  "E203",  # whitespace before ':' (Black-compatible)
+  "E501",  # line length handled by formatter
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+  "heavy: tests that require torch/monai (skipped in CI)"
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+ignore_missing_imports = true
+strict_optional = true

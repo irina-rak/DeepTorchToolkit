@@ -1,0 +1,32 @@
+seed: 123
+
+trainer:
+  max_epochs: 1
+  accelerator: auto
+  devices: auto
+  precision: 32-true
+
+model:
+  name: monai.unet
+  optim:
+    name: adam
+    lr: 1e-3
+  params:
+    in_channels: 1
+    out_channels: 1
+    channels: [16, 32, 64]
+    strides: [2, 2]
+    num_res_units: 2
+    loss: bce
+
+data:
+  name: medical2d
+  batch_size: 2
+  num_workers: 2
+  params:
+    synthetic: true
+
+logger:
+  wandb:
+    project: dtt
+    mode: offline

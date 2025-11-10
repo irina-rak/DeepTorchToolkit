@@ -1,0 +1,62 @@
+seed: 123
+
+trainer:
+  max_epochs: 50
+  accelerator: auto
+  devices: auto
+  precision: 16-mixed  # Use mixed precision for faster training
+  log_every_n_steps: 10
+
+model:
+  name: monai.unet
+  optim:
+    name: adamw
+    lr: 1e-3
+    weight_decay: 0.01
+  scheduler:
+    name: cosine  # Cosine annealing learning rate
+    params:
+      T_max: 50
+      eta_min: 1e-6
+  metrics:
+    - dice  # Track Dice coefficient during validation
+  params:
+    in_channels: 1
+    out_channels: 1
+    channels: [32, 64, 128, 256]
+    strides: [2, 2, 2]
+    num_res_units: 2
+    norm: batch
+    loss: dice  # Use Dice loss instead of BCE
+
+data:
+  name: medical2d
+  batch_size: 8
+  num_workers: 4
+  params:
+    synthetic: true  # Change to false and provide json_train/json_val for real data
+    json_train: null  # e.g., "datasets/train_split.json"
+    json_val: null    # e.g., "datasets/val_split.json"
+    cache_rate: 0.5   # Cache 50% of data in memory for faster training
+
+logger:
+  wandb:
+    project: dtt-advanced-example
+    name: unet-cosine-scheduler
+    tags: ["cosine-lr", "dice-loss", "mixed-precision"]
+    mode: offline
+
+callbacks:
+  model_checkpoint:
+    monitor: val/dice  # Save best model based on Dice score
+    mode: max
+    save_top_k: 3
+    filename: epoch{epoch:02d}-dice{val/dice:.4f}
+    save_last: true
+  early_stopping:
+    monitor: val/dice
+    patience: 15
+    mode: max
+    min_delta: 0.001
+  lr_monitor:
+    logging_interval: step

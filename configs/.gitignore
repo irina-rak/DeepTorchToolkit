@@ -1,0 +1,8 @@
+# Ignore everything...
+*
+
+# ...except these files
+!.gitignore
+!defaults.yaml
+!advanced_config.yaml
+!minimal_config.yaml
