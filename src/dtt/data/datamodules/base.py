@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from dtt.utils.registry import register_datamodule
 
@@ -12,7 +12,7 @@ class _BaseLightningDataModule:
         pass
 
     # Placeholder methods matching LightningDataModule API
-    def setup(self, stage: Optional[str] = None):  # pragma: no cover
+    def setup(self, stage: str | None = None):  # pragma: no cover
         pass
 
     def train_dataloader(self):  # pragma: no cover
@@ -23,13 +23,13 @@ class _BaseLightningDataModule:
 
 
 @register_datamodule("base")
-def build_base_datamodule(cfg: Dict[str, Any]):
+def build_base_datamodule(cfg: dict[str, Any]):
     """Returns a pass-through base datamodule (not used directly)."""
     try:
         from lightning.pytorch import LightningDataModule  # type: ignore
     except Exception:  # pragma: no cover - optional dep
-        class LightningDataModule(_BaseLightningDataModule):
-            ...
+
+        class LightningDataModule(_BaseLightningDataModule): ...
 
     class BaseDataModule(LightningDataModule):
         pass

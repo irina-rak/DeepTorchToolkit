@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from dtt.data.datamodules.custom_datasets.json_cache_ds import JSONCacheDataset
 from dtt.utils.registry import register_datamodule
 
 
 @register_datamodule("chest_xray2d")
-def build_chest_xray2d_datamodule(cfg: Dict[str, Any]):
+def build_chest_xray2d_datamodule(cfg: dict[str, Any]):
     from lightning.pytorch import LightningDataModule
 
     data_cfg = cfg.get("data", {})
@@ -26,7 +26,7 @@ def build_chest_xray2d_datamodule(cfg: Dict[str, Any]):
             self._train = None
             self._val = None
 
-        def setup(self, stage: Optional[str] = None) -> None:  # type: ignore[override]
+        def setup(self, stage: str | None = None) -> None:  # type: ignore[override]
             from dtt.data.transforms.medical2d import (
                 get_train_transforms,
                 get_val_transforms,

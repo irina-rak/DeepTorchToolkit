@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import List
 
-
-def get_train_transforms() -> List[object]:
+def get_train_transforms() -> list[object]:
     try:
         from monai.transforms import (
             EnsureChannelFirstd,
@@ -31,7 +29,7 @@ def get_train_transforms() -> List[object]:
         return []
 
 
-def get_val_transforms() -> List[object]:
+def get_val_transforms() -> list[object]:
     try:
         from monai.transforms import (
             EnsureChannelFirstd,

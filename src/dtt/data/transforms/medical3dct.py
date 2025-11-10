@@ -1,35 +1,31 @@
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple, Union
+from collections.abc import Sequence
 
 
 def get_train_transforms(
-        patch_size: Union[Sequence[int], Tuple[int, int, int]] = (96, 96, 96)
-) -> List[object]:
+    patch_size: Sequence[int] | tuple[int, int, int] = (96, 96, 96)
+) -> list[object]:
     try:
         from monai.transforms import (
+            CropForegroundd,
             EnsureChannelFirstd,
             LoadImaged,
             NormalizeIntensityd,
-            CropForegroundd,
+            RandCropByPosNegLabeld,
             RandFlipd,
             RandRotated,
             ScaleIntensityRanged,
-            RandCropByPosNegLabeld,
-            SpatialPadd
+            SpatialPadd,
         )
 
         preprocessing = [
             LoadImaged(keys=["image", "label"]),
             EnsureChannelFirstd(keys=["image", "label"]),
-            CropForegroundd(keys=["image", "label"], source_key="image", margin=10), # crop out black borders - be careful with this
-            ScaleIntensityRanged(
-                keys=["image"],
-                a_min=-250,
-                a_max=600,
-                b_min=0.0,
-                b_max=1.0
-            ),
+            CropForegroundd(
+                keys=["image", "label"], source_key="image", margin=10
+            ),  # crop out black borders - be careful with this
+            ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0),
             NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
             RandCropByPosNegLabeld(
                 keys=["image", "label"],
@@ -59,16 +55,16 @@ def get_train_transforms(
 
 
 def get_val_transforms(
-        patch_size: Union[Sequence[int], Tuple[int, int, int]] = (96, 96, 96)
-) -> List[object]:
+    patch_size: Sequence[int] | tuple[int, int, int] = (96, 96, 96)
+) -> list[object]:
     try:
         from monai.transforms import (
             EnsureChannelFirstd,
             LoadImaged,
             NormalizeIntensityd,
-            ScaleIntensityRanged,
             RandCropByPosNegLabeld,
-            SpatialPadd
+            ScaleIntensityRanged,
+            SpatialPadd,
         )
 
         return [

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from dtt.data.datamodules.custom_datasets.json_cache_ds import JSONCacheDataset
 from dtt.utils.registry import register_datamodule
 
 
 @register_datamodule("medical2d")
-def build_medical2d_datamodule(cfg: Dict[str, Any]):
+def build_medical2d_datamodule(cfg: dict[str, Any]):
     from lightning.pytorch import LightningDataModule
 
     data_cfg = cfg.get("data", {})
@@ -44,7 +44,7 @@ def build_medical2d_datamodule(cfg: Dict[str, Any]):
             self._train = None
             self._val = None
 
-        def setup(self, stage: Optional[str] = None) -> None:  # type: ignore[override]
+        def setup(self, stage: str | None = None) -> None:  # type: ignore[override]
             if synthetic or not json_train or not json_val:
                 # Fallback synthetic tiny dataset
                 self._train = _Synthetic2DDataset(length=32)
