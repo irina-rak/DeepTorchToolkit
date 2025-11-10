@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from rich.console import Console
 
-_console: Optional[Console] = None
+_console: Console | None = None
 
 
 def get_console() -> Console:
@@ -15,13 +15,15 @@ def get_console() -> Console:
     return _console
 
 
-def make_wandb_logger(cfg: Dict[str, Any]):
+def make_wandb_logger(cfg: dict[str, Any]):
     """Create a WandbLogger from a logger config dict.
 
     Expects keys under cfg["logger"]["wandb"]: project, name (optional), entity (optional), tags (list), mode.
     Gracefully handles missing API key by allowing offline mode.
     """
-    from lightning.pytorch.loggers import WandbLogger  # local import to avoid hard dep at import time
+    from lightning.pytorch.loggers import (
+        WandbLogger,  # local import to avoid hard dep at import time
+    )
 
     wandb_cfg = cfg.get("logger", {}).get("wandb", {})
     mode = wandb_cfg.get("mode", os.getenv("WANDB_MODE", "offline"))

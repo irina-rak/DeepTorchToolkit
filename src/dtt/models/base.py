@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-
 from dtt.config.schemas import OptimConfig, SchedulerConfig
 
 
@@ -38,7 +36,7 @@ def build_optimizer(params, optim_cfg: OptimConfig):
         raise ValueError(f"Unknown optimizer: {optim_cfg.name}")
 
 
-def build_scheduler(optimizer, scheduler_cfg: SchedulerConfig) -> Optional[object]:
+def build_scheduler(optimizer, scheduler_cfg: SchedulerConfig) -> object | None:
     """Build LR scheduler from config.
 
     Returns None if scheduler is not configured.
@@ -52,9 +50,9 @@ def build_scheduler(optimizer, scheduler_cfg: SchedulerConfig) -> Optional[objec
     params = scheduler_cfg.params
 
     if name == "cosine":
-        T_max = params.get("T_max", 50)
+        t_max = params.get("T_max", 50)
         eta_min = params.get("eta_min", 0)
-        return sched.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
+        return sched.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
     elif name == "reduce_on_plateau":
         mode = params.get("mode", "min")
         factor = params.get("factor", 0.1)

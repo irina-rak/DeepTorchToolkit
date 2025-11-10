@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -12,8 +12,8 @@ class OptimConfig(BaseModel):
 
 
 class SchedulerConfig(BaseModel):
-    name: Optional[str] = None  # e.g., "cosine", "reduce_on_plateau", "step"
-    params: Dict[str, Any] = Field(default_factory=dict)  # scheduler-specific params
+    name: str | None = None  # e.g., "cosine", "reduce_on_plateau", "step"
+    params: dict[str, Any] = Field(default_factory=dict)  # scheduler-specific params
 
 
 class TrainerConfig(BaseModel):
@@ -26,24 +26,24 @@ class TrainerConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     name: str = Field(default="monai.unet")
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     optim: OptimConfig = Field(default_factory=OptimConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
-    metrics: List[str] = Field(default_factory=list)  # e.g., ["dice", "hausdorff"]
+    metrics: list[str] = Field(default_factory=list)  # e.g., ["dice", "hausdorff"]
 
 
 class DataConfig(BaseModel):
     name: str = Field(default="medical2d")
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     batch_size: int = 4
     num_workers: int = 4
 
 
 class WandBConfig(BaseModel):
     project: str = "dtt"
-    name: Optional[str] = None
-    entity: Optional[str] = None
-    tags: List[str] = Field(default_factory=list)
+    name: str | None = None
+    entity: str | None = None
+    tags: list[str] = Field(default_factory=list)
     mode: str = "offline"  # offline by default for safety
 
 
@@ -56,7 +56,7 @@ class ModelCheckpointConfig(BaseModel):
     save_top_k: int = 1
     mode: str = "min"
     filename: str = "epoch{epoch:02d}-valloss{val/loss:.3f}"
-    dirpath: Optional[str] = None
+    dirpath: str | None = None
     save_last: bool = True
     verbose: bool = False
 

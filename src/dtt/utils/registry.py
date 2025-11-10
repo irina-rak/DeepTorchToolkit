@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from collections.abc import Callable
+from typing import Any
 
 ModelBuilder = Callable[[dict], Any]
 DataModuleBuilder = Callable[[dict], Any]
 
-_MODELS: Dict[str, ModelBuilder] = {}
-_DATAMODULES: Dict[str, DataModuleBuilder] = {}
+_MODELS: dict[str, ModelBuilder] = {}
+_DATAMODULES: dict[str, DataModuleBuilder] = {}
 
 
 def register_model(name: str) -> Callable[[ModelBuilder], ModelBuilder]:

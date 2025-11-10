@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from dtt.config.schemas import Config
 from dtt.models.base import build_optimizer, build_scheduler
@@ -8,31 +8,31 @@ from dtt.utils.registry import register_model
 
 
 @register_model("monai.unet")
-def build_monai_unet(cfg: Dict[str, Any]):
+def build_monai_unet(cfg: dict[str, Any]):
     """Factory that returns a LightningModule wrapping MONAI UNet.
 
     This import pattern keeps torch/monai heavy deps out of module import time.
     """
-    from lightning.pytorch import LightningModule
     import torch
+    from lightning.pytorch import LightningModule
 
     try:
-        from monai.networks.nets import UNet
         from monai.losses import DiceLoss
         from monai.metrics import DiceMetric
+        from monai.networks.nets import UNet
     except Exception:  # pragma: no cover - optional dependency
-        UNet = None
-        DiceLoss = None
-        DiceMetric = None
+        UNet = None  # noqa: N806
+        DiceLoss = None  # noqa: N806
+        DiceMetric = None  # noqa: N806
 
     class MonaiUNetLightning(LightningModule):
-        def __init__(self, config: Config | Dict[str, Any]):
+        def __init__(self, config: Config | dict[str, Any]):
             super().__init__()
             # normalize config
             if isinstance(config, dict):
-                from dtt.config.schemas import Config as C
+                from dtt.config.schemas import Config as ConfigSchema  # noqa: N817
 
-                config = C.model_validate(config)
+                config = ConfigSchema.model_validate(config)
             mcfg = config.model
             p = mcfg.params
 

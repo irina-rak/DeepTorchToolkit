@@ -60,13 +60,8 @@ def test_callback_schemas_validated():
     assert cfg.callbacks.model_checkpoint.mode == "max"
     assert cfg.callbacks.early_stopping.patience == 20
 
-    # Invalid mode should fail
-    cfg_dict_bad = {
-        "seed": 1,
-        "callbacks": {"model_checkpoint": {"mode": "invalid_mode"}},
-    }
-    # Pydantic won't validate arbitrary strings for mode - would need an enum
-    # This test shows config accepts string fields; add enum constraint if stricter validation needed
+    # Note: Pydantic accepts arbitrary strings for mode field
+    # Could add enum constraint if stricter validation needed
 
 
 @pytest.mark.heavy
@@ -102,7 +97,7 @@ def test_scheduler_builder():
 def test_example_config_with_scheduler():
     """Test that example config with scheduler validates and works."""
     try:
-        import torch
+        import torch  # noqa: F401
     except ImportError:
         pytest.skip("Torch not installed")
 

@@ -79,6 +79,7 @@ lint.select = [
 lint.ignore = [
   "E203",  # whitespace before ':' (Black-compatible)
   "E501",  # line length handled by formatter
+  "B008",  # function call in argument defaults (required for Typer)
 ]
 
 [tool.pytest.ini_options]

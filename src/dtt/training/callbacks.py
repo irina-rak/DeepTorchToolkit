@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 
-def build_callbacks(cfg: Dict[str, Any]) -> List[object]:
+def build_callbacks(cfg: dict[str, Any]) -> list[object]:
     """Construct common Lightning callbacks from config.
 
     Returns a list of callback instances. Imports are local to avoid heavy deps at import time.
@@ -13,7 +13,7 @@ def build_callbacks(cfg: Dict[str, Any]) -> List[object]:
 
     cb_cfg = cfg.get("callbacks", {})
 
-    callbacks: List[object] = []
+    callbacks: list[object] = []
 
     mc = cb_cfg.get("model_checkpoint")
     if mc:

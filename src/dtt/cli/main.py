@@ -1,23 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from typer.main import get_command
 
 from dtt.config.schemas import Config
-from dtt.utils.io import read_yaml
 from dtt.training.train import run_training
-from dtt.utils.seed import seed_everything
+from dtt.utils.io import read_yaml
 from dtt.utils.logging import get_console
+from dtt.utils.seed import seed_everything
 
 _typer_app = typer.Typer(add_completion=False, no_args_is_help=True, help="DeepTorchToolkit CLI")
 
 
 @_typer_app.command(help="DeepTorchToolkit CLI - Train a model specified by the config.")
 def train(
-    config: Optional[Path] = typer.Option(
+    config: Path | None = typer.Option(
         None, "--config", "-c", help="Path to YAML config; uses defaults if omitted"
     ),
     print_config: bool = typer.Option(
@@ -40,7 +39,6 @@ def train(
     cfg = Config.model_validate(cfg_dict)
 
     if print_config:
-        import json
 
         console.print_json(data=cfg.model_dump())
         raise typer.Exit(code=0)
