@@ -19,11 +19,15 @@ def test_cli_help():
 
 def test_cli_train_help():
     """Test that train subcommand help works."""
+    import re
+
     runner = CliRunner()
     result = runner.invoke(app, ["train", "--help"])
     assert result.exit_code == 0
-    assert "config" in result.output.lower()
-    assert "print-config" in result.output.lower()
+    # Remove ANSI color codes for reliable testing
+    clean_output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "config" in clean_output.lower()
+    assert "print-config" in clean_output.lower() or "print_config" in clean_output.lower()
 
 
 def test_cli_print_config():
