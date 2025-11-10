@@ -37,7 +37,9 @@ def build_monai_unet(cfg: dict[str, Any]):
             p = mcfg.params
 
             if UNet is None:
-                raise ImportError("MONAI is not installed. Install with `pip install -e .[monai]`. ")
+                raise ImportError(
+                    "MONAI is not installed. Install with `pip install -e .[monai]`. "
+                )
 
             self.model = UNet(
                 spatial_dims=2,
@@ -110,4 +112,3 @@ def build_monai_unet(cfg: dict[str, Any]):
             return optimizer
 
     return MonaiUNetLightning(cfg)
-

@@ -87,4 +87,3 @@ class Config(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     logger: LoggerConfig = Field(default_factory=LoggerConfig)
     callbacks: CallbacksConfig = Field(default_factory=CallbacksConfig)
-

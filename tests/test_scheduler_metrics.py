@@ -11,9 +11,7 @@ def test_scheduler_config_validation():
     cfg_dict = {
         "seed": 1,
         "trainer": {"max_epochs": 1},
-        "model": {
-            "scheduler": {"name": "cosine", "params": {"T_max": 50, "eta_min": 1e-6}}
-        },
+        "model": {"scheduler": {"name": "cosine", "params": {"T_max": 50, "eta_min": 1e-6}}},
     }
     cfg = Config.model_validate(cfg_dict)
     assert cfg.model.scheduler.name == "cosine"

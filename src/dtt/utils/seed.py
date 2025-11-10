@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 
-def seed_everything(seed: int = 42, workers: bool = True, deterministic: bool | None = None) -> None:
+def seed_everything(
+    seed: int = 42, workers: bool = True, deterministic: bool | None = None
+) -> None:
     """Seed common libraries and set deterministic flags if Lightning is available.
 
     If lightning is installed, delegate to lightning.pytorch.seed_everything for consistent behavior.

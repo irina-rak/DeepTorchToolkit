@@ -67,4 +67,3 @@ def build_scheduler(optimizer, scheduler_cfg: SchedulerConfig) -> object | None:
         return sched.ExponentialLR(optimizer, gamma=gamma)
     else:
         raise ValueError(f"Unknown scheduler: {scheduler_cfg.name}")
-
