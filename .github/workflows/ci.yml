@@ -24,7 +24,7 @@ jobs:
 
       - name: Install light dependencies
         run: |
-          uv pip install --system -e .[dev]
+          uv sync --extra all
 
       - name: Lint (ruff)
         run: |
