@@ -1,9 +1,6 @@
 import json
 from pathlib import Path
 
-from monai.data import CacheDataset
-from monai.transforms import Compose
-
 from dtt.utils.logging import get_console
 
 console = get_console()
@@ -20,8 +17,11 @@ class JSONCacheDataset:
         data_dir: str,
         cache_rate: float = 1.0,
         num_workers: int = 4,
-        transforms: Compose = None,
+        transforms=None,  # Accepts MONAI Compose or any transform
     ):
+        # Lazy import MONAI to avoid hard dependency at import time
+        from monai.data import CacheDataset
+
         self.data_dir = Path(data_dir)
         self.cache_rate = cache_rate
         self.num_workers = num_workers

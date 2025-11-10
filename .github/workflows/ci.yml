@@ -24,20 +24,20 @@ jobs:
 
       - name: Install light dependencies
         run: |
-          uv sync --extra all
+          uv sync --extra dev
 
       - name: Lint (ruff)
         run: |
-          ruff --version
-          ruff check src tests
+          uv run ruff --version
+          uv run ruff check src tests
 
       - name: Format check (black)
         run: |
-          black --version
-          black --check src tests
+          uv run black --version
+          uv run black --check src tests
 
       - name: Run tests (torch-free)
         env:
           PYTHONWARNINGS: "ignore"
         run: |
-          pytest -q -k "not heavy"
+          uv run pytest -q -k "not heavy"
