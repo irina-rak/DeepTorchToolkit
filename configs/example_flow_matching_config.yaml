@@ -1,0 +1,110 @@
+seed: 4294967295
+save_dir: experiments  # Base directory for all training outputs (default: experiments)
+
+trainer:
+  max_epochs: 200
+  accelerator: gpu
+  devices: [0] # Specify GPU device(s), e.g., [0] for single GPU
+  precision: bf16-mixed
+  log_every_n_steps: 10
+
+model:
+  name: flow_matching
+
+  # Optimizer configuration
+  optim:
+    name: adamw
+    lr: 3e-4
+    weight_decay: 1e-2
+  
+  # Learning rate scheduler (optional)
+  scheduler:
+    name: cosine
+    params:
+      T_max: 100
+  
+  # Model parameters
+  params:
+    # UNet architecture (MONAI DiffusionModelUNet)
+    unet_config:
+      spatial_dims: 2
+      in_channels: 1
+      out_channels: 1
+      channels: [64, 128, 256]
+      attention_levels: [False, True, True]
+      num_res_blocks: [2, 2, 2]
+      norm_num_groups: 32
+      num_head_channels: 64
+      resblock_updown: true
+      with_conditioning: false
+      transformer_num_layers: 1
+      use_flash_attention: true
+      dropout_cattn: 0.0
+    
+    # Flow matching solver settings
+    solver_args:
+      time_points: 20  # Number of time points during training (validation)
+      method: midpoint
+    
+    # Timestep rescaling
+    max_timestep: 1000
+    
+    # Training settings
+    manual_accumulate_grad_batches: 4
+    seed: 4294967295
+    _logging: true
+    
+    # Scaling range for better stability and convergence
+    data_range: "[-1,1]"  # Recommended: "[-1,1]" or "[0,1]"
+    
+    # EMA settings (Exponential Moving Average - Improves generation quality)
+    use_ema: false
+    ema_decay: 0.9999
+    
+    # Validation generation settings (for performance tuning)
+    generate_validation_samples: true
+    generate_frequency: 10
+    val_max_batches: 2         # Number of batches for validation metrics
+    val_time_points: 10        # Fewer ODE steps for faster validation
+
+data:
+  name: medical2d
+  batch_size: 2
+  num_workers: 2
+  params:
+    json_train: null  # path to JSON file with train data: [{"image": "path/to/img", "label": "path/to/label"}]
+    json_val: null    # path to JSON file with validation data
+    # This framework does not support performance evaluation via test set yet, but this can be added in future releases
+    cache_rate: 0.0   # fraction of data to cache in memory (0.0-1.0)
+    synthetic: true   # For testing purposes: if true, use a tiny synthetic fallback dataset (torch required)
+
+logger:
+  wandb:
+    project: dtt
+    name: null
+    entity: null  # your W&B team/username if applicable
+    tags: ["template", "dtt"]
+    mode: offline  # "online" to sync to W&B cloud, "offline" for local only
+    api_key: null  # Optional: W&B API key (overrides WANDB_API_KEY env var)
+                   # Get your key from: https://wandb.ai/authorize
+                   # Alternative: set WANDB_API_KEY env var or run `wandb login`
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    save_top_k: 3
+    mode: min
+    filename: epoch{epoch:02d}
+    save_last: true
+    verbose: true
+  
+  early_stopping:
+    monitor: val/loss
+    patience: 20
+    mode: min
+    min_delta: 0.001
+    verbose: true
+  
+  lr_monitor:
+    logging_interval: epoch
+    log_momentum: false

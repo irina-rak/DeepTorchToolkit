@@ -1,4 +1,5 @@
 seed: 4294967295
+save_dir: experiments  # Base directory for all training outputs (default: experiments)
 
 trainer:
   max_epochs: 2
