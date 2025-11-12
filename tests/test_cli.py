@@ -9,4 +9,4 @@ def test_cli_help():
     runner = CliRunner()
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "DeepTorchToolkit CLI" in result.output
+    assert "Train a model specified by the config" in result.output

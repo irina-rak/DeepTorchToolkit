@@ -30,7 +30,7 @@ def make_wandb_logger(cfg: dict[str, Any], save_dir: str | None = None):
         1. In config: logger.wandb.api_key
         2. Environment variable: WANDB_API_KEY
         3. Pre-authenticated via `wandb login`
-        
+
     Args:
         cfg: Configuration dictionary
         save_dir: Directory where WandB should save its files (optional)
@@ -61,8 +61,8 @@ def make_wandb_logger(cfg: dict[str, Any], save_dir: str | None = None):
         "tags": tags,
         "mode": mode,
     }
-    
+
     if save_dir:
         logger_kwargs["save_dir"] = save_dir
-    
+
     return WandbLogger(**logger_kwargs)
