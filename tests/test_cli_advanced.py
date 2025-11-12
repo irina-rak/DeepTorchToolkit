@@ -14,7 +14,7 @@ def test_cli_help():
     runner = CliRunner()
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "DeepTorchToolkit CLI" in result.output
+    assert "Train a model specified by the config" in result.output
 
 
 def test_cli_train_help():
@@ -62,7 +62,7 @@ trainer:
 
     try:
         runner = CliRunner()
-        result = runner.invoke(app, ["--config", str(tmp_path), "--print-config"])
+        result = runner.invoke(app, [str(tmp_path), "--print-config"])
         assert result.exit_code == 0
 
         import json
