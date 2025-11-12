@@ -12,7 +12,7 @@ def build_callbacks(cfg: dict[str, Any], run_dir: str | None = None) -> list[obj
 
     Note: RichProgressBar and RichModelSummary are added by default to use Rich
     instead of tqdm for all progress bars and model summaries.
-    
+
     Args:
         cfg: Configuration dictionary
         run_dir: Directory for this run's outputs (checkpoints, logs, etc.)
