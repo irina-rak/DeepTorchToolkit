@@ -10,7 +10,7 @@ This template is optimized for clarity and maintainability, with minimal magic a
 ## Highlights
 - Simple, readable project structure under `src/dtt`
 - YAML configs validated with Pydantic models (typo-proof with schemas)
-- Typer-based CLI: `dtt train --config path.yaml`
+- Typer-based CLI: `dtt train config.yaml` (simple positional argument)
 - W&B integration with safe defaults (offline supported)
 - Example MONAI U-Net Lightning module and a 2D medical DataModule
 - **Registry pattern** with auto-discovery for models and datamodules
@@ -27,38 +27,45 @@ This template is optimized for clarity and maintainability, with minimal magic a
 2) Install DTT for development (light deps only):
 
 ```bash
-uv sync --extras dev
+uv sync --extra dev
 ```
 
 3) Optional: Install heavy deps when ready to train with GPUs/CPUs:
 
 ```bash
 # Choose torch build for your platform (CPU/CUDA) as needed
-uv sync --extras torch
+uv sync --extra torch
 
 # MONAI + nibabel (depends on torch)
-uv sync --extras monai
+uv sync --extra monai
 
 # Alternatively, install all at once:
-uv sync --extras all
+uv sync --extra all
 ```
 
 4) Check the CLI:
 
 ```bash
-python -m dtt.cli.main --help
+dtt --help
+# Can also be run with: python -m dtt.cli.main --help
 ```
 
 5) Dry-run: print a resolved config (no training):
 
 ```bash
-python -m dtt.cli.main train --print-config
+dtt train examples/minimal_config.yaml --print-config
 ```
 
 6) Train with a config (requires torch + optionally monai):
 
 ```bash
-python -m dtt.cli.main train --config examples/minimal_config.yaml
+dtt train examples/minimal_config.yaml
+```
+
+Or use defaults if no config provided:
+
+```bash
+dtt train
 ```
 
 Set `WANDB_MODE=offline` to avoid uploading if you just want local logs.
@@ -85,7 +92,7 @@ src/dtt/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         User Input                                  │
-│  CLI: dtt train --config my_config.yaml                             │
+│  CLI: dtt train my_config.yaml                                      │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
                              ▼
@@ -300,13 +307,18 @@ logger:
     entity: my_team        # W&B team/user (optional)
     tags: [exp1, ablation] # Tags for organization
     mode: offline          # "offline" or "online"
+    api_key: null          # Optional: W&B API key
+                           # 3 ways to authenticate:
+                           # 1. Set in config (here)
+                           # 2. Set WANDB_API_KEY env var
+                           # 3. Run `wandb login` once
 ```
 
 ---
 
 ## Notes
-- Add a new model: create a file in `src/dtt/models/...` and register it in `registry.py`.
-- Add a new DataModule: add to `src/dtt/data/datamodules/...` and register it.
+- Add a new model: create a file in `src/dtt/models/...` and register it in `registry.py` with `@register_model("model.name")`.
+- Add a new DataModule: add to `src/dtt/data/datamodules/...` and register it with `@register_datamodule("data.name")`.
 - Reference them by name in your config (e.g., `model.name: monai.unet`, `data.name: medical2d`).
 
 ## Notes

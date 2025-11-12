@@ -14,10 +14,10 @@ from dtt.utils.seed import seed_everything
 _typer_app = typer.Typer(add_completion=False, no_args_is_help=True, help="DeepTorchToolkit CLI")
 
 
-@_typer_app.command(help="DeepTorchToolkit CLI - Train a model specified by the config.")
+@_typer_app.command()
 def train(
-    config: Path | None = typer.Option(
-        None, "--config", "-c", help="Path to YAML config; uses defaults if omitted"
+    config: Path | None = typer.Argument(
+        None, help="Path to YAML config file (uses defaults if omitted)"
     ),
     print_config: bool = typer.Option(
         False, "--print-config", help="Print resolved config and exit"
