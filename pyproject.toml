@@ -26,6 +26,7 @@ dependencies = [
   "Pillow>=10.0",
   "wandb>=0.17.0",
   "pandas>=2.3.3",
+  "matplotlib>=3.10.7",
 ]
 
 [project.urls]
@@ -48,9 +49,13 @@ torch = [
 monai = [
   "monai>=1.4.0",
   "nibabel>=5.2",
+  "einops>=0.8.1",
+]
+generative_modeling = [
+  "flow-matching>=1.0.10",
 ]
 all = [
-  "deeptorchtoolkit[dev,torch,monai]",
+  "deeptorchtoolkit[dev,torch,monai,generative_modeling]",
 ]
 
 [project.scripts]

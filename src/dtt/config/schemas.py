@@ -19,7 +19,7 @@ class SchedulerConfig(BaseModel):
 class TrainerConfig(BaseModel):
     max_epochs: int = 1
     accelerator: str = "auto"
-    devices: int | str | None = None  # e.g., 1, "auto"
+    devices: int | list[int] | str | None = None  # e.g., 1, "auto"
     precision: str | int = "32-true"  # lightning style string acceptable
     log_every_n_steps: int = 50
 
@@ -45,6 +45,7 @@ class WandBConfig(BaseModel):
     entity: str | None = None
     tags: list[str] = Field(default_factory=list)
     mode: str = "offline"  # offline by default for safety
+    api_key: str | None = None  # Optional: override WANDB_API_KEY env var
 
 
 class LoggerConfig(BaseModel):
@@ -82,6 +83,7 @@ class CallbacksConfig(BaseModel):
 
 class Config(BaseModel):
     seed: int = 42
+    save_dir: str = "experiments"  # Base directory for all training outputs
     trainer: TrainerConfig = Field(default_factory=TrainerConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
