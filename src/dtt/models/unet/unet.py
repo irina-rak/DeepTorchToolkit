@@ -25,7 +25,7 @@ def build_monai_unet(cfg: dict[str, Any]):
         DiceLoss = None  # noqa: N806
         DiceMetric = None  # noqa: N806
 
-    class MonaiUNetLightning(LightningModule):
+    class LitMonaiUNet(LightningModule):
         def __init__(self, config: Config | dict[str, Any]):
             super().__init__()
             # normalize config
@@ -38,7 +38,7 @@ def build_monai_unet(cfg: dict[str, Any]):
 
             if UNet is None:
                 raise ImportError(
-                    "MONAI is not installed. Install with `pip install -e .[monai]`. "
+                    "MONAI is not installed. Install with `uv pip install -e .[monai]`. "
                 )
 
             self.model = UNet(
@@ -111,4 +111,4 @@ def build_monai_unet(cfg: dict[str, Any]):
 
             return optimizer
 
-    return MonaiUNetLightning(cfg)
+    return LitMonaiUNet(cfg)

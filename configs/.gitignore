@@ -3,6 +3,4 @@
 
 # ...except these files
 !.gitignore
-!defaults.yaml
-!advanced_config.yaml
-!minimal_config.yaml
+!example_*.yaml

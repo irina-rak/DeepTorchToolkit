@@ -43,6 +43,9 @@ class JSONCacheDataset:
     def __len__(self):
         return len(self.dataset)
 
+    def __getitem__(self, index):
+        return self.dataset[index]
+
     def create_data_list(self):
         try:
             with open(self.data_dir) as f:

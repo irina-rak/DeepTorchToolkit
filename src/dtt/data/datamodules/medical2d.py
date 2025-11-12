@@ -19,6 +19,7 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
     json_val = params.get("json_val")
     cache_rate = float(params.get("cache_rate", 0.0))
     synthetic = bool(params.get("synthetic", True))
+    spatial_size = tuple(params.get("spatial_size", [256, 256]))
 
     class _Synthetic2DDataset:
         def __init__(self, size: int = 64, length: int = 64):
@@ -60,14 +61,14 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
                     data_dir=json_train,
                     cache_rate=cache_rate,
                     num_workers=num_workers,
-                    transforms=get_train_transforms(),
+                    transforms=get_train_transforms(spatial_size=spatial_size),
                 )
 
                 self._val = JSONCacheDataset(
                     data_dir=json_val,
                     cache_rate=cache_rate,
                     num_workers=num_workers,
-                    transforms=get_val_transforms(),
+                    transforms=get_val_transforms(spatial_size=spatial_size),
                 )
 
         def train_dataloader(self):  # type: ignore[override]
