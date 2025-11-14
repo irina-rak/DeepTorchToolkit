@@ -629,7 +629,6 @@ name = "deeptorchtoolkit"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "einops" },
     { name = "lightning" },
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -646,6 +645,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "black" },
+    { name = "einops" },
     { name = "flow-matching" },
     { name = "monai" },
     { name = "mypy" },
@@ -671,6 +671,7 @@ generative-modeling = [
     { name = "flow-matching" },
 ]
 monai = [
+    { name = "einops" },
     { name = "monai" },
     { name = "nibabel" },
 ]
@@ -683,7 +684,7 @@ torch = [
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=24.8" },
     { name = "deeptorchtoolkit", extras = ["dev", "torch", "monai", "generative-modeling"], marker = "extra == 'all'" },
-    { name = "einops", specifier = ">=0.8.1" },
+    { name = "einops", marker = "extra == 'monai'", specifier = ">=0.8.1" },
     { name = "flow-matching", marker = "extra == 'generative-modeling'", specifier = ">=1.0.10" },
     { name = "lightning", specifier = ">=2.4.0" },
     { name = "matplotlib", specifier = ">=3.10.7" },
