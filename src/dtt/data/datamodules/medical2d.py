@@ -6,7 +6,7 @@ from dtt.data.datamodules.custom_datasets.json_cache_ds import JSONCacheDataset
 from dtt.utils.registry import register_datamodule
 
 
-@register_datamodule("medical2d")
+@register_datamodule("data.medical2d")
 def build_medical2d_datamodule(cfg: dict[str, Any]):
     from lightning.pytorch import LightningDataModule
 
@@ -37,7 +37,8 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
 
             x = torch.randn(1, self.size, self.size, generator=self.rng)
             y = (x.mean() > 0).float().expand_as(x[:1])  # simple target
-            return x, y
+            # Return dictionary to match MONAI convention
+            return {"image": x, "label": y}
 
     class Medical2DDataModule(LightningDataModule):
         def __init__(self) -> None:

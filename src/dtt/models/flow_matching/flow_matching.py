@@ -400,8 +400,11 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             Generation is configurable and runs only every N epochs to avoid
             excessive computational overhead during training.
+
+            Note: Only rank 0 performs metric computation to save compute.
+            This means logging inside must use sync_dist=False to avoid deadlocks.
             """
-            # Avoid duplicate work under DDP
+            # Avoid duplicate work under DDP - only rank 0 computes generation metrics
             if hasattr(self.trainer, "is_global_zero") and not self.trainer.is_global_zero:
                 return
 
@@ -516,11 +519,13 @@ def build_flow_matching(cfg: dict[str, Any]):
                             progress.update(task, advance=1)
 
             # Log average metrics
+            # Note: sync_dist=False because only rank 0 computes these metrics
+            # (on_validation_epoch_end has early return for other ranks)
             if psnr_scores:
                 avg_psnr = sum(psnr_scores) / len(psnr_scores)
                 avg_ssim = sum(ssim_scores) / len(ssim_scores)
-                self.log("val/psnr", avg_psnr, prog_bar=True, sync_dist=True)
-                self.log("val/ssim", avg_ssim, prog_bar=True, sync_dist=True)
+                self.log("val/psnr", avg_psnr, prog_bar=True, sync_dist=False, rank_zero_only=True)
+                self.log("val/ssim", avg_ssim, prog_bar=True, sync_dist=False, rank_zero_only=True)
 
                 if use_progress:
                     console.log(
@@ -532,8 +537,16 @@ def build_flow_matching(cfg: dict[str, Any]):
         def _save_center_slice_comparison(
             self, real_vol: torch.Tensor, gen_vol: torch.Tensor, epoch: int
         ):
-            """Save a quick center slice comparison for visual monitoring."""
+            """Save a quick center slice comparison for visual monitoring.
+
+            Note: This method should only be called on rank 0 in DDP setups to avoid
+            race conditions with file I/O and matplotlib operations.
+            """
             import os
+
+            # CRITICAL: Only run on rank 0 to avoid DDP race conditions
+            if hasattr(self.trainer, "is_global_zero") and not self.trainer.is_global_zero:
+                return
 
             import matplotlib
 
@@ -553,7 +566,7 @@ def build_flow_matching(cfg: dict[str, Any]):
                     elif hasattr(self.trainer.logger.experiment, "path"):
                         log_dir = str(self.trainer.logger.experiment.path)
                         console.log(f"[dim]Using WandB experiment.path: {log_dir}[/dim]")
-                
+
                 # Fallback to logger attributes
                 if not log_dir:
                     if hasattr(self.trainer.logger, "save_dir") and self.trainer.logger.save_dir:
@@ -568,13 +581,18 @@ def build_flow_matching(cfg: dict[str, Any]):
                 log_dir = os.path.abspath(self.trainer.default_root_dir)
                 console.log(f"[dim]Using trainer.default_root_dir: {log_dir}[/dim]")
 
-            # Create quick_samples subdirectory
+            # Create quick_samples subdirectory (with error handling for DDP)
             samples_dir = os.path.join(log_dir, "quick_samples")
-            os.makedirs(samples_dir, exist_ok=True)
+            try:
+                os.makedirs(samples_dir, exist_ok=True)
+            except OSError as e:
+                console.log(f"[yellow]Warning: Could not create samples directory: {e}[/yellow]")
+                return
 
             # Get center slices from 3D volume [C, D, H, W]
-            real = real_vol.cpu().squeeze()  # [D, H, W] or [H, W]
-            gen = gen_vol.cpu().squeeze()
+            # Move to CPU early to avoid GPU memory issues
+            real = real_vol.detach().cpu().squeeze()  # [D, H, W] or [H, W]
+            gen = gen_vol.detach().cpu().squeeze()
 
             if real.dim() == 3:  # 3D volume
                 center_slice = real.shape[0] // 2
@@ -590,28 +608,38 @@ def build_flow_matching(cfg: dict[str, Any]):
             )
             gen_slice = (gen_slice - gen_slice.min()) / (gen_slice.max() - gen_slice.min() + 1e-8)
 
-            # Create side-by-side comparison
-            fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-            axes[0].imshow(gen_slice.numpy(), cmap="gray")
-            axes[0].set_title(f"Generated (Epoch {epoch})")
-            axes[0].axis("off")
-
-            axes[1].imshow(real_slice.numpy(), cmap="gray")
-            axes[1].set_title("Real")
-            axes[1].axis("off")
-
-            plt.tight_layout()
+            # Wrap matplotlib operations in try-except for robustness
             save_path = os.path.join(samples_dir, f"epoch_{epoch:04d}.png")
-            plt.savefig(save_path, bbox_inches="tight", dpi=100)
-            
-            # Log to WandB if available
+            try:
+                # Create side-by-side comparison
+                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+                axes[0].imshow(gen_slice.numpy(), cmap="gray")
+                axes[0].set_title(f"Generated (Epoch {epoch})")
+                axes[0].axis("off")
+
+                axes[1].imshow(real_slice.numpy(), cmap="gray")
+                axes[1].set_title("Real")
+                axes[1].axis("off")
+
+                plt.tight_layout()
+                plt.savefig(save_path, bbox_inches="tight", dpi=100)
+            except Exception as e:
+                console.log(f"[yellow]Warning: Could not save comparison plot: {e}[/yellow]")
+                return
+            finally:
+                # Always clean up matplotlib resources
+                plt.close(fig) if "fig" in locals() else None
+                plt.close("all")
+
+            # Log to WandB if available (only on rank 0)
             if self.trainer.logger is not None:
                 try:
                     import wandb
-                    
+
                     # Check if this is a WandB logger
                     if hasattr(self.trainer.logger, "experiment") and isinstance(
-                        self.trainer.logger.experiment, (wandb.sdk.wandb_run.Run, wandb.wandb_run.Run)
+                        self.trainer.logger.experiment,
+                        (wandb.sdk.wandb_run.Run, wandb.wandb_run.Run),
                     ):
                         # Log the image to WandB
                         self.trainer.logger.experiment.log(
@@ -627,13 +655,6 @@ def build_flow_matching(cfg: dict[str, Any]):
                     pass  # WandB not installed, skip logging
                 except Exception as e:
                     console.log(f"[yellow]Warning: Could not log image to WandB: {e}[/yellow]")
-            
-            plt.close(fig)  # Explicitly close the figure
-            plt.close("all")  # Close all figures to be safe
-
-            # Clear matplotlib cache
-            matplotlib.pyplot.clf()
-            matplotlib.pyplot.cla()
 
             console.log(f"[dim]Saved sample comparison to: {save_path}[/dim]")
 
