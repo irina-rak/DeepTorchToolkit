@@ -59,10 +59,13 @@ def test_auto_registered_datamodules_available():
     # Import the datamodules package to trigger auto-registration
     import dtt.data.datamodules  # noqa: F401
 
-    # Base and medical2d should be registered
+    # Base and medical2d should be registered (with "data." prefix)
     builder_base = get_datamodule("base")
-    builder_med = get_datamodule("medical2d")
+    builder_med = get_datamodule("data.medical2d")
+    builder_med3dct = get_datamodule("data.medical3dct")
     assert builder_base is not None
     assert builder_med is not None
+    assert builder_med3dct is not None
     assert callable(builder_base)
     assert callable(builder_med)
+    assert callable(builder_med3dct)

@@ -31,8 +31,9 @@ logs/
 *.log
 
 # Data and outputs
-outputs/
 checkpoints/
+experiments/
+outputs/
 wandb/
 
 # Jupyter
@@ -48,5 +49,6 @@ wandb/
 # Backup files
 *_backup*
 
-# Personal settings
+# Personal settings and files
 verify_setup.py
+*_ignore*
