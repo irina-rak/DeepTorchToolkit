@@ -38,13 +38,13 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
 
             # Generate random noise from standard normal distribution
             x = torch.randn(1, self.size, self.size, generator=self.rng)
-            
+
             # Normalize to [0, 1] range to match real image data
             # torch.randn produces ~N(0,1), so we clip to [-3, 3] (99.7% coverage)
             # then scale to [0, 1]
             x = torch.clamp(x, -3.0, 3.0)  # Clip outliers
             x = (x + 3.0) / 6.0  # Scale from [-3, 3] to [0, 1]
-            
+
             y = (x.mean() > 0.5).float().expand_as(x[:1])  # simple target
             # Return dictionary to match MONAI convention
             return {"image": x, "label": y}
