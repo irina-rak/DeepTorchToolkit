@@ -21,7 +21,7 @@ def get_train_transforms(spatial_size: tuple[int, int] = (256, 256)):
         preprocessing = [
             LoadImaged(keys=["image", "label"], reader=pil_reader),
             EnsureChannelFirstd(keys=["image", "label"]),
-            ScaleIntensityd(keys=["image"]),
+            ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),  # Explicitly scale to [0, 1]
             Resized(
                 keys=["image", "label"], spatial_size=spatial_size, mode=["bilinear", "nearest"]
             ),
@@ -58,7 +58,7 @@ def get_val_transforms(spatial_size: tuple[int, int] = (256, 256)):
             [
                 LoadImaged(keys=["image", "label"], reader=pil_reader),
                 EnsureChannelFirstd(keys=["image", "label"]),
-                ScaleIntensityd(keys=["image"]),
+                ScaleIntensityd(keys=["image"], minv=0.0, maxv=1.0),  # Explicitly scale to [0, 1]
                 Resized(
                     keys=["image", "label"],
                     spatial_size=spatial_size,

@@ -17,6 +17,7 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
 
     json_train = params.get("json_train")
     json_val = params.get("json_val")
+    json_test = params.get("json_test")
     cache_rate = float(params.get("cache_rate", 0.0))
     synthetic = bool(params.get("synthetic", True))
     spatial_size = tuple(params.get("spatial_size", [256, 256]))
@@ -35,8 +36,16 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
         def __getitem__(self, idx: int):
             import torch
 
+            # Generate random noise from standard normal distribution
             x = torch.randn(1, self.size, self.size, generator=self.rng)
-            y = (x.mean() > 0).float().expand_as(x[:1])  # simple target
+
+            # Normalize to [0, 1] range to match real image data
+            # torch.randn produces ~N(0,1), so we clip to [-3, 3] (99.7% coverage)
+            # then scale to [0, 1]
+            x = torch.clamp(x, -3.0, 3.0)  # Clip outliers
+            x = (x + 3.0) / 6.0  # Scale from [-3, 3] to [0, 1]
+
+            y = (x.mean() > 0.5).float().expand_as(x[:1])  # simple target
             # Return dictionary to match MONAI convention
             return {"image": x, "label": y}
 
@@ -45,12 +54,14 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
             super().__init__()
             self._train = None
             self._val = None
+            self._test = None
 
         def setup(self, stage: str | None = None) -> None:  # type: ignore[override]
             if synthetic or not json_train or not json_val:
                 # Fallback synthetic tiny dataset
                 self._train = _Synthetic2DDataset(length=32)
                 self._val = _Synthetic2DDataset(length=16)
+                self._test = _Synthetic2DDataset(length=16)
             else:
                 # JSON-based dataset using MONAI
                 from dtt.data.transforms.medical2d import (
@@ -72,6 +83,18 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
                     transforms=get_val_transforms(spatial_size=spatial_size),
                 )
 
+                # Test dataset: use json_test if provided, otherwise reuse val
+                if json_test:
+                    self._test = JSONCacheDataset(
+                        data_dir=json_test,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_val_transforms(spatial_size=spatial_size),
+                    )
+                else:
+                    # Reuse validation dataset as test if no test set provided
+                    self._test = self._val
+
         def train_dataloader(self):  # type: ignore[override]
             from torch.utils.data import DataLoader
 
@@ -81,5 +104,10 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
             from torch.utils.data import DataLoader
 
             return DataLoader(self._val, batch_size=batch_size, num_workers=num_workers)
+
+        def test_dataloader(self):  # type: ignore[override]
+            from torch.utils.data import DataLoader
+
+            return DataLoader(self._test, batch_size=batch_size, num_workers=num_workers)
 
     return Medical2DDataModule()
