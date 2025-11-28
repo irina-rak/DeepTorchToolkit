@@ -25,16 +25,16 @@ def _setup_output_directory(cfg: dict[str, Any]) -> str:
         Absolute path to the run directory
     """
     from datetime import datetime
-    
+
     base_dir = cfg.get("save_dir", "experiments")
     logger_cfg = cfg.get("logger", {}).get("wandb", {})
     run_name = logger_cfg.get("name", "run")
-    
+
     # Add timestamp to run name if not already present
     if run_name and "_202" not in run_name:  # Simple check if timestamp already added
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"{run_name}_{timestamp}"
-    
+
     # Simplified structure: save_dir/run_name (no project subdirectory)
     run_dir = os.path.abspath(os.path.join(base_dir, run_name))
     os.makedirs(run_dir, exist_ok=True)

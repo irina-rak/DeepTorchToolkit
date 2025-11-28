@@ -322,10 +322,22 @@ def build_flow_matching(cfg: dict[str, Any]):
                 loss_per_sample = loss_per_sample.reshape(loss_per_sample.shape[0], -1).mean(dim=1)
 
                 # Always log to avoid DDP hangs (use 0.0 if no samples in mask)
-                early_loss = loss_per_sample[early_mask].mean() if early_mask.any() else torch.tensor(0.0, device=self.device)
-                mid_loss = loss_per_sample[mid_mask].mean() if mid_mask.any() else torch.tensor(0.0, device=self.device)
-                late_loss = loss_per_sample[late_mask].mean() if late_mask.any() else torch.tensor(0.0, device=self.device)
-                
+                early_loss = (
+                    loss_per_sample[early_mask].mean()
+                    if early_mask.any()
+                    else torch.tensor(0.0, device=self.device)
+                )
+                mid_loss = (
+                    loss_per_sample[mid_mask].mean()
+                    if mid_mask.any()
+                    else torch.tensor(0.0, device=self.device)
+                )
+                late_loss = (
+                    loss_per_sample[late_mask].mean()
+                    if late_mask.any()
+                    else torch.tensor(0.0, device=self.device)
+                )
+
                 self.log("train/loss_early_t", early_loss, prog_bar=False, sync_dist=True)
                 self.log("train/loss_mid_t", mid_loss, prog_bar=False, sync_dist=True)
                 self.log("train/loss_late_t", late_loss, prog_bar=False, sync_dist=True)
@@ -385,10 +397,10 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             This method is called during inference (trainer.test()) to generate
             samples from random noise. It supports two modes:
-            
+
             1. Conditional (with test data): Computes reconstruction metrics
             2. Unconditional (no test data): Pure generation from noise
-            
+
             The generated samples are saved to the inference_output_dir.
             """
             import os
@@ -406,19 +418,19 @@ def build_flow_matching(cfg: dict[str, Any]):
             # Get batch size and shape from input
             batch_size = batch["image"].shape[0]
             device = self.device
-            
+
             imgs_original = batch["image"].to(device)
 
             # # Hint: Ensure channel dimension exists (Real images are usually B,C,H,W)
             # if imgs_original.ndim == 3:
             #     imgs_original = imgs_original.unsqueeze(1)
-            
+
             # Normalize images to model's expected range for proper shape/scale
             imgs_normalized = self._normalize_data(imgs_original)
 
             # Generate samples from random noise (same shape as normalized images)
             x_init = torch.randn_like(imgs_normalized)
-            
+
             # # Debug logging
             # if batch_idx == 0 and self._logging:
             #     from dtt.utils.logging import get_console
@@ -431,7 +443,7 @@ def build_flow_matching(cfg: dict[str, Any]):
             # Solver configuration
             time_points = self.solver_args.get("time_points", 20)
             method = self.solver_args.get("method", "midpoint")
-            
+
             # if batch_idx == 0 and self._logging:
             #     console.log(f"[dim]test_step debug: time_points={time_points}, method={method}[/dim]")
 
@@ -451,14 +463,14 @@ def build_flow_matching(cfg: dict[str, Any]):
             # Denormalize generated samples back to [0, 1] range
             generated_samples = self._denormalize_data(generated_samples)
             generated_samples = torch.clamp(generated_samples, 0.0, 1.0)
-            
+
             # if batch_idx == 0 and self._logging:
             #     console.log(f"[dim]test_step debug: generated_samples (after denorm) range=[{generated_samples.min():.3f}, {generated_samples.max():.3f}][/dim]")
 
             # Compute metrics only if we have real test data (not unconditional generation)
             metrics = {}
             real_images_for_comparison = None
-            
+
             if not is_unconditional:
                 # Conditional mode: compute reconstruction metrics
                 # Use imgs_original which is already in [0, 1] range
@@ -470,7 +482,7 @@ def build_flow_matching(cfg: dict[str, Any]):
                 if self._logging:
                     self.log("test/psnr", metrics["psnr"], sync_dist=True)
                     self.log("test/ssim", metrics["ssim"], sync_dist=True)
-                
+
                 real_images_for_comparison = batch["image"].cpu()
 
             # Save generated samples
@@ -507,6 +519,7 @@ def build_flow_matching(cfg: dict[str, Any]):
                 output_dir: Directory to save images
             """
             import os
+
             import matplotlib
 
             matplotlib.use("Agg")
@@ -528,6 +541,7 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             # Rotate 90° clockwise to correct orientation
             import numpy as np
+
             sample_slice = np.rot90(sample_slice.numpy(), k=-1)
 
             fig, ax = plt.subplots(1, 1, figsize=(5, 5))
@@ -555,6 +569,7 @@ def build_flow_matching(cfg: dict[str, Any]):
                 real: Optional real image for comparison
             """
             import os
+
             import matplotlib
 
             matplotlib.use("Agg")
@@ -580,6 +595,7 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             # Rotate 90° clockwise to correct orientation
             import numpy as np
+
             sample_slice = np.rot90(sample_slice.numpy(), k=-1)
 
             # Create comparison if real image provided
@@ -700,7 +716,7 @@ def build_flow_matching(cfg: dict[str, Any]):
                         # Normalize for generation
                         imgs = self._normalize_data(imgs_original)
                         x_init = torch.randn_like(imgs)
-                        
+
                         # # Debug logging for first batch
                         # if i == 0 and use_progress:
                         #     console.log(f"[dim]_compute_generation_metrics debug: imgs_original range=[{imgs_original.min():.3f}, {imgs_original.max():.3f}][/dim]")
@@ -724,9 +740,11 @@ def build_flow_matching(cfg: dict[str, Any]):
                         # Denormalize generated images back to [0, 1] for metrics
                         final_imgs_denorm = self._denormalize_data(final_imgs)
                         final_imgs_denorm = torch.clamp(final_imgs_denorm, 0.0, 1.0)
-                        
+
                         if i == 0 and use_progress:
-                            console.log(f"[dim]_compute_generation_metrics debug: generated_samples (after denorm) range=[{final_imgs_denorm.min():.3f}, {final_imgs_denorm.max():.3f}][/dim]")
+                            console.log(
+                                f"[dim]_compute_generation_metrics debug: generated_samples (after denorm) range=[{final_imgs_denorm.min():.3f}, {final_imgs_denorm.max():.3f}][/dim]"
+                            )
 
                         # Compute metrics (PSNR/SSIM expect [0, 1] range)
                         psnr = self.psnr_metric(final_imgs_denorm, imgs_original).mean()
@@ -828,6 +846,7 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             # Rotate 90° clockwise to correct orientation
             import numpy as np
+
             gen_slice = np.rot90(gen_slice.numpy(), k=-1)
 
             # Wrap matplotlib operations in try-except for robustness
@@ -952,6 +971,7 @@ def build_flow_matching(cfg: dict[str, Any]):
 
             # Rotate 90° clockwise to correct orientation
             import numpy as np
+
             real_slice = np.rot90(real_slice.numpy(), k=-1)
             gen_slice = np.rot90(gen_slice.numpy(), k=-1)
 
