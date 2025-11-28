@@ -81,6 +81,11 @@ class CallbacksConfig(BaseModel):
     lr_monitor: LRMonitorConfig = Field(default_factory=LRMonitorConfig)
 
 
+class InferenceConfig(BaseModel):
+    use_test_data: bool = True  # If False, uses dummy data for unconditional generation
+    num_batches: int = 10  # Number of batches for unconditional generation
+
+
 class Config(BaseModel):
     seed: int = 42
     save_dir: str = "experiments"  # Base directory for all training outputs
@@ -89,3 +94,4 @@ class Config(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     logger: LoggerConfig = Field(default_factory=LoggerConfig)
     callbacks: CallbacksConfig = Field(default_factory=CallbacksConfig)
+    inference: InferenceConfig = Field(default_factory=InferenceConfig)  # For inference configs

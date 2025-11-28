@@ -41,6 +41,13 @@ def build_callbacks(cfg: dict[str, Any], run_dir: str | None = None) -> list[obj
         mc_dict = mc.copy() if isinstance(mc, dict) else {}
         if run_dir and "dirpath" not in mc_dict:
             mc_dict["dirpath"] = os.path.join(run_dir, "checkpoints")
+        
+        # Sanitize filename to prevent directory creation from metric names with "/"
+        # Replace {metric/name} with {metric_name} in the filename pattern
+        if "filename" in mc_dict and isinstance(mc_dict["filename"], str):
+            # Replace metric names with slashes to use underscores instead
+            mc_dict["filename"] = mc_dict["filename"].replace("val/loss", "val_loss")
+        
         callbacks.append(ModelCheckpoint(**mc_dict))
 
     es = cb_cfg.get("early_stopping")
