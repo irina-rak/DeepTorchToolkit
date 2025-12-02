@@ -1032,11 +1032,17 @@ def build_flow_matching(cfg: dict[str, Any]):
             # Return optimizer + scheduler if configured
             scheduler = build_scheduler(optimizer, self.scheduler_cfg)
             if scheduler is not None:
-                # Check if ReduceLROnPlateau (needs monitor)
-                scheduler_cfg_dict = {"scheduler": scheduler}
+                # Build scheduler configuration dict
+                scheduler_cfg_dict = {
+                    "scheduler": scheduler,
+                    "interval": "epoch",  # Update every epoch (not every step)
+                    "frequency": 1,       # Update every 1 epoch
+                }
+                
+                # ReduceLROnPlateau needs a monitor metric
                 if self.scheduler_cfg.name and "plateau" in self.scheduler_cfg.name.lower():
                     scheduler_cfg_dict["monitor"] = "val/loss"
-                    scheduler_cfg_dict["interval"] = "epoch"
+                
                 return {"optimizer": optimizer, "lr_scheduler": scheduler_cfg_dict}
 
             return optimizer
