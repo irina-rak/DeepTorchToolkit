@@ -3,21 +3,16 @@ from __future__ import annotations
 
 def get_train_transforms(spatial_size: tuple[int, int] = (256, 256)):
     try:
+        import numpy as np
         from monai.data import PILReader
         from monai.transforms import (
             Compose,
             EnsureChannelFirstd,
             LoadImaged,
             RandAffined,
-            RandFlipd,
-            RandRotated,
             Resized,
-            ScaleIntensityd,
             ScaleIntensityRanged,
-            ToTensord,
         )
-
-        import numpy as np
 
         # Use PILReader with mode='L' to force grayscale loading
         pil_reader = PILReader(converter=lambda img: img.convert("L"))
@@ -64,7 +59,6 @@ def get_val_transforms(spatial_size: tuple[int, int] = (256, 256)):
             EnsureChannelFirstd,
             LoadImaged,
             Resized,
-            ScaleIntensityd,
             ScaleIntensityRanged,
         )
 

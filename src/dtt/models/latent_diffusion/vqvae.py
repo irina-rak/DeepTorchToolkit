@@ -81,7 +81,7 @@ def build_vqvae(cfg: dict[str, Any]):
                 _logging: bool (default: True)
     """
     import torch
-    import torch.nn.functional as F
+    import torch.nn.functional as functional
     from lightning.pytorch import LightningModule
     from monai.networks.nets import VQVAE, PatchDiscriminator
     from monai.utils import set_determinism
@@ -240,9 +240,9 @@ def build_vqvae(cfg: dict[str, Any]):
         ) -> torch.Tensor:
             """Compute reconstruction loss."""
             if self.reconstruction_loss_type == "l1":
-                return F.l1_loss(recon, target)
+                return functional.l1_loss(recon, target)
             elif self.reconstruction_loss_type in ("l2", "mse"):
-                return F.mse_loss(recon, target)
+                return functional.mse_loss(recon, target)
             else:
                 raise ValueError(f"Unknown reconstruction loss: {self.reconstruction_loss_type}")
 
@@ -250,18 +250,18 @@ def build_vqvae(cfg: dict[str, Any]):
             self, fake_logits: torch.Tensor | list[torch.Tensor]
         ) -> torch.Tensor:
             """Compute generator adversarial loss.
-            
+
             PatchDiscriminator returns a list of feature maps, so we average over all scales.
             """
             # Handle list output from PatchDiscriminator (multi-scale)
             if isinstance(fake_logits, list):
                 losses = [self._compute_generator_adversarial_loss(fl) for fl in fake_logits]
                 return torch.stack(losses).mean()
-            
+
             if self.disc_loss_type == "hinge":
                 return -torch.mean(fake_logits)
             elif self.disc_loss_type == "vanilla":
-                return F.binary_cross_entropy_with_logits(
+                return functional.binary_cross_entropy_with_logits(
                     fake_logits, torch.ones_like(fake_logits)
                 )
             elif self.disc_loss_type == "least_squares":
@@ -270,36 +270,37 @@ def build_vqvae(cfg: dict[str, Any]):
                 raise ValueError(f"Unknown disc_loss_type: {self.disc_loss_type}")
 
         def _compute_discriminator_loss(
-            self, real_logits: torch.Tensor | list[torch.Tensor], 
-            fake_logits: torch.Tensor | list[torch.Tensor]
+            self,
+            real_logits: torch.Tensor | list[torch.Tensor],
+            fake_logits: torch.Tensor | list[torch.Tensor],
         ) -> torch.Tensor:
             """Compute discriminator loss.
-            
+
             PatchDiscriminator returns a list of feature maps, so we average over all scales.
             """
             # Handle list output from PatchDiscriminator (multi-scale)
             if isinstance(real_logits, list) and isinstance(fake_logits, list):
                 losses = [
-                    self._compute_discriminator_loss(rl, fl) 
-                    for rl, fl in zip(real_logits, fake_logits)
+                    self._compute_discriminator_loss(rl, fl)
+                    for rl, fl in zip(real_logits, fake_logits, strict=True)
                 ]
                 return torch.stack(losses).mean()
-            
+
             if self.disc_loss_type == "hinge":
-                real_loss = torch.mean(F.relu(1.0 - real_logits))
-                fake_loss = torch.mean(F.relu(1.0 + fake_logits))
+                real_loss = torch.mean(functional.relu(1.0 - real_logits))
+                fake_loss = torch.mean(functional.relu(1.0 + fake_logits))
                 return 0.5 * (real_loss + fake_loss)
             elif self.disc_loss_type == "vanilla":
-                real_loss = F.binary_cross_entropy_with_logits(
+                real_loss = functional.binary_cross_entropy_with_logits(
                     real_logits, torch.ones_like(real_logits)
                 )
-                fake_loss = F.binary_cross_entropy_with_logits(
+                fake_loss = functional.binary_cross_entropy_with_logits(
                     fake_logits, torch.zeros_like(fake_logits)
                 )
                 return 0.5 * (real_loss + fake_loss)
             elif self.disc_loss_type == "least_squares":
                 real_loss = 0.5 * torch.mean((real_logits - 1) ** 2)
-                fake_loss = 0.5 * torch.mean(fake_logits ** 2)
+                fake_loss = 0.5 * torch.mean(fake_logits**2)
                 return 0.5 * (real_loss + fake_loss)
             else:
                 raise ValueError(f"Unknown disc_loss_type: {self.disc_loss_type}")
@@ -319,8 +320,7 @@ def build_vqvae(cfg: dict[str, Any]):
 
             # Check if discriminator should be active
             disc_active = (
-                self.discriminator is not None
-                and self.current_epoch >= self.disc_start_epoch
+                self.discriminator is not None and self.current_epoch >= self.disc_start_epoch
             )
 
             # ==================== Generator (VQ-VAE) Update ====================
@@ -377,7 +377,9 @@ def build_vqvae(cfg: dict[str, Any]):
                 self.log("train/recon_loss", recon_loss, prog_bar=False, sync_dist=True)
                 self.log("train/vq_loss", quantization_loss, prog_bar=False, sync_dist=True)
                 if self.perceptual_weight > 0:
-                    self.log("train/perceptual_loss", perceptual_loss, prog_bar=False, sync_dist=True)
+                    self.log(
+                        "train/perceptual_loss", perceptual_loss, prog_bar=False, sync_dist=True
+                    )
                 if disc_active:
                     self.log("train/g_adv_loss", g_adv_loss, prog_bar=False, sync_dist=True)
                     self.log("train/d_loss", d_loss, prog_bar=True, sync_dist=True)
@@ -522,21 +524,19 @@ def build_vqvae(cfg: dict[str, Any]):
 
         def on_train_epoch_end(self) -> None:
             """Calculate scaling factor at the end of the last epoch.
-            
+
             This ensures the scaling factor is computed BEFORE the final checkpoint
             is saved (on_train_end runs after checkpointing).
             """
             # Only compute on the last epoch and on rank 0
             if not self.trainer.is_global_zero:
                 return
-            
-            is_last_epoch = (self.current_epoch == self.trainer.max_epochs - 1)
+
+            is_last_epoch = self.current_epoch == self.trainer.max_epochs - 1
             if not is_last_epoch:
                 return
 
-            console.print(
-                "[bold cyan]Calculating scaling factor for downstream LDM...[/bold cyan]"
-            )
+            console.print("[bold cyan]Calculating scaling factor for downstream LDM...[/bold cyan]")
 
             latent_stds = []
             with torch.no_grad():
@@ -552,16 +552,16 @@ def build_vqvae(cfg: dict[str, Any]):
                 avg_std = sum(latent_stds) / len(latent_stds)
                 scaling_factor = 1.0 / (avg_std + 1e-8)
                 scaling_factor = max(0.01, min(10.0, scaling_factor))
-                
+
                 # Store as buffer so it gets saved in checkpoint
-                self.register_buffer("scaling_factor", torch.tensor(scaling_factor, device=self.device))
-                
+                self.register_buffer(
+                    "scaling_factor", torch.tensor(scaling_factor, device=self.device)
+                )
+
                 console.print(
                     f"[bold green]Calculated scale_factor for LDM: {scaling_factor:.4f}[/bold green]"
                 )
-                console.print(
-                    f"[dim]Latent std: {avg_std:.4f} (scale_factor = 1/std)[/dim]"
-                )
+                console.print(f"[dim]Latent std: {avg_std:.4f} (scale_factor = 1/std)[/dim]")
 
         def on_save_checkpoint(self, checkpoint: dict) -> None:
             """Save scaling factor to checkpoint if available."""

@@ -2,7 +2,7 @@
 
 This package provides modular components for Latent Diffusion Models:
 - VAE (AutoencoderKL): KL-regularized variational autoencoder
-- VQ-VAE: Vector-quantized variational autoencoder  
+- VQ-VAE: Vector-quantized variational autoencoder
 - LDM U-Net: Diffusion model operating in latent space
 
 Training workflow:
@@ -11,6 +11,8 @@ Training workflow:
 3. Generate samples in latent space, decode to pixel space
 """
 
-from dtt.models.latent_diffusion import ldm_unet  # noqa: F401
-from dtt.models.latent_diffusion import vae  # noqa: F401
-from dtt.models.latent_diffusion import vqvae  # noqa: F401
+from dtt.models.latent_diffusion import (
+    ldm_unet,  # noqa: F401
+    vae,  # noqa: F401
+    vqvae,  # noqa: F401
+)

@@ -86,10 +86,10 @@ def build_ldm_unet(cfg: dict[str, Any]):
     import os
 
     import torch
-    import torch.nn.functional as F
+    import torch.nn.functional as functional
     from lightning.pytorch import LightningModule
     from monai.inferers import LatentDiffusionInferer
-    from monai.networks.nets import AutoencoderKL, DiffusionModelUNet, VQVAE
+    from monai.networks.nets import VQVAE, AutoencoderKL, DiffusionModelUNet
     from monai.networks.schedulers import DDPMScheduler
     from monai.utils import first, set_determinism
 
@@ -188,7 +188,11 @@ def build_ldm_unet(cfg: dict[str, Any]):
             # LatentDiffusionInferer for training and sampling
             # If scaling_factor is None (will be computed in on_fit_start), use 1.0 temporarily
             if self.scaling_factor is not None:
-                scale_factor_value = self.scaling_factor.item() if isinstance(self.scaling_factor, torch.Tensor) else self.scaling_factor
+                scale_factor_value = (
+                    self.scaling_factor.item()
+                    if isinstance(self.scaling_factor, torch.Tensor)
+                    else self.scaling_factor
+                )
             else:
                 scale_factor_value = 1.0  # Temporary, will be updated in on_fit_start
             self.inferer = LatentDiffusionInferer(
@@ -299,31 +303,33 @@ def build_ldm_unet(cfg: dict[str, Any]):
                 )
 
             return autoencoder
-        
+
         @torch.no_grad()
         def _compute_scaling_factor(self):
             """Compute scaling factor based on latent space standard deviation
             of the first batch from the training dataloader."""
             console.log("[bold][cyan]Computing scaling factor from training data...[/cyan][/bold]")
-            
+
             with torch.autocast(device_type=self.device.type, enabled=(self.device.type == "cuda")):
                 train_loader = self.trainer.datamodule.train_dataloader()
                 batch = first(train_loader)
                 images = batch["image"].to(self.device)
-                
+
                 # Encode to latent space
                 z = self.autoencoder.encode_stage_2_inputs(images)
-                
+
                 # Compute std dev of latent representations
                 latent_std = torch.std(z)
-                
+
                 # Scaling factor is inverse of std dev
                 scaling_factor = 1 / (latent_std + 1e-8)
-                
-                console.log(f"[bold][blue]Computed scaling factor: {scaling_factor.item():.4f}[/blue][/bold]")
+
+                console.log(
+                    f"[bold][blue]Computed scaling factor: {scaling_factor.item():.4f}[/blue][/bold]"
+                )
 
             return scaling_factor
-        
+
         def _create_ema_model(self):
             """Create EMA copy of the U-Net."""
             import copy
@@ -351,19 +357,25 @@ def build_ldm_unet(cfg: dict[str, Any]):
             # Compute scaling factor if not already loaded
             if self.scaling_factor is None:
                 self.scaling_factor = self._compute_scaling_factor()
-            
+
             # Create/update LatentDiffusionInferer with correct scaling factor
-            scale_factor_value = self.scaling_factor.item() if isinstance(self.scaling_factor, torch.Tensor) else self.scaling_factor
+            scale_factor_value = (
+                self.scaling_factor.item()
+                if isinstance(self.scaling_factor, torch.Tensor)
+                else self.scaling_factor
+            )
             self.inferer = LatentDiffusionInferer(
                 scheduler=self.scheduler,
                 scale_factor=scale_factor_value,
             )
-            console.log(f"[bold green]Created LatentDiffusionInferer with scale_factor={scale_factor_value:.4f}[/bold green]")
+            console.log(
+                f"[bold green]Created LatentDiffusionInferer with scale_factor={scale_factor_value:.4f}[/bold green]"
+            )
 
         @torch.no_grad()
         def encode(self, x: torch.Tensor) -> torch.Tensor:
             """Encode image to latent space using frozen autoencoder.
-            
+
             Note: This method does NOT apply scaling_factor. The LatentDiffusionInferer
             handles scaling internally. This is primarily used for getting latent shapes
             or for manual encoding when not using the inferer.
@@ -386,7 +398,7 @@ def build_ldm_unet(cfg: dict[str, Any]):
         @torch.no_grad()
         def decode(self, z: torch.Tensor) -> torch.Tensor:
             """Decode latent to image using frozen autoencoder.
-            
+
             Note: This method does NOT apply inverse scaling_factor. The LatentDiffusionInferer
             handles scaling internally in its sample() method.
 
@@ -427,7 +439,7 @@ def build_ldm_unet(cfg: dict[str, Any]):
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
             """Training step with manual gradient accumulation.
-            
+
             Uses LatentDiffusionInferer for encoding and noise prediction.
             """
             images = batch["image"]
@@ -466,8 +478,8 @@ def build_ldm_unet(cfg: dict[str, Any]):
                 autoencoder_model=self.autoencoder,
                 # condition=context,
             )
-            
-            loss = F.mse_loss(noise_pred, noise)
+
+            loss = functional.mse_loss(noise_pred, noise)
 
             # Scale loss for gradient accumulation
             loss_scaled = loss / self.manual_accumulate_grad_batches
@@ -515,8 +527,8 @@ def build_ldm_unet(cfg: dict[str, Any]):
                 timesteps=timesteps,
                 condition=context,
             )
-            
-            loss = F.mse_loss(noise_pred, noise)
+
+            loss = functional.mse_loss(noise_pred, noise)
 
             if self._logging:
                 self.log("val/loss", loss, prog_bar=True, sync_dist=True)
@@ -565,9 +577,7 @@ def build_ldm_unet(cfg: dict[str, Any]):
             self.scheduler.set_timesteps(self.num_inference_steps)
 
             # Use LatentDiffusionInferer for sampling (handles decoding internally)
-            with torch.autocast(
-                device_type=self.device.type, enabled=(self.device.type == "cuda")
-            ):
+            with torch.autocast(device_type=self.device.type, enabled=(self.device.type == "cuda")):
                 generated_images = self.inferer.sample(
                     input_noise=noise,
                     autoencoder_model=self.autoencoder,
@@ -607,7 +617,7 @@ def build_ldm_unet(cfg: dict[str, Any]):
                 )
                 plt.savefig(save_path, bbox_inches="tight", dpi=100)
                 plt.close(fig)
-                
+
                 # Collect for W&B logging
                 wandb_images.append(img)
 
@@ -615,14 +625,17 @@ def build_ldm_unet(cfg: dict[str, Any]):
             if self.logger is not None and hasattr(self.logger, "experiment"):
                 try:
                     import wandb
+
                     # Log as a grid of images
-                    self.logger.experiment.log({
-                        "generated_samples": [
-                            wandb.Image(img, caption=f"Sample {i}")
-                            for i, img in enumerate(wandb_images)
-                        ],
-                        "epoch": self.current_epoch,
-                    })
+                    self.logger.experiment.log(
+                        {
+                            "generated_samples": [
+                                wandb.Image(img, caption=f"Sample {i}")
+                                for i, img in enumerate(wandb_images)
+                            ],
+                            "epoch": self.current_epoch,
+                        }
+                    )
                 except Exception as e:
                     console.log(f"[yellow]Could not log images to W&B: {e}[/yellow]")
 
