@@ -15,8 +15,7 @@ console = get_console()
 def _setup_output_directory(cfg: dict[str, Any]) -> str:
     """Create and return the structured output directory for this run.
 
-    Directory structure: <save_dir>/<run_name_with_timestamp>/
-    (WandB logger will not create additional subdirectories)
+    Directory structure: <save_dir>/<project>/<run_name_with_timestamp>/
 
     Args:
         cfg: Configuration dictionary
@@ -28,6 +27,7 @@ def _setup_output_directory(cfg: dict[str, Any]) -> str:
 
     base_dir = cfg.get("save_dir", "experiments")
     logger_cfg = cfg.get("logger", {}).get("wandb", {})
+    project_name = logger_cfg.get("project", "default")
     run_name = logger_cfg.get("name", "run")
 
     # Add timestamp to run name if not already present
@@ -35,8 +35,8 @@ def _setup_output_directory(cfg: dict[str, Any]) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_name = f"{run_name}_{timestamp}"
 
-    # Simplified structure: save_dir/run_name (no project subdirectory)
-    run_dir = os.path.abspath(os.path.join(base_dir, run_name))
+    # Structure: save_dir/project/run_name
+    run_dir = os.path.abspath(os.path.join(base_dir, project_name, run_name))
     os.makedirs(run_dir, exist_ok=True)
 
     console.log(f"[bold green]Output directory:[/bold green] {run_dir}")

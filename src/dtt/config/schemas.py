@@ -19,6 +19,7 @@ class SchedulerConfig(BaseModel):
 class TrainerConfig(BaseModel):
     max_epochs: int = 1
     accelerator: str = "auto"
+    strategy: str | list[str] | None = None  # e.g., "ddp", ["ddp_find_unused_parameters_false"]
     devices: int | list[int] | str | None = None  # e.g., 1, "auto"
     precision: str | int = "32-true"  # lightning style string acceptable
     log_every_n_steps: int = 50
@@ -77,7 +78,7 @@ class LRMonitorConfig(BaseModel):
 
 class CallbacksConfig(BaseModel):
     model_checkpoint: ModelCheckpointConfig = Field(default_factory=ModelCheckpointConfig)
-    early_stopping: EarlyStoppingConfig = Field(default_factory=EarlyStoppingConfig)
+    early_stopping: EarlyStoppingConfig | None = None  # Optional - set to None to disable
     lr_monitor: LRMonitorConfig = Field(default_factory=LRMonitorConfig)
 
 

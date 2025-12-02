@@ -51,7 +51,7 @@ def build_callbacks(cfg: dict[str, Any], run_dir: str | None = None) -> list[obj
         callbacks.append(ModelCheckpoint(**mc_dict))
 
     es = cb_cfg.get("early_stopping")
-    if es:
+    if es is not None:  # Only add if explicitly configured (not None)
         callbacks.append(EarlyStopping(**es))
 
     lr = cb_cfg.get("lr_monitor")

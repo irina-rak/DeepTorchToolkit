@@ -50,6 +50,7 @@ monai = [
   "monai>=1.4.0",
   "nibabel>=5.2",
   "einops>=0.8.1",
+  "lpips>=0.1.4",
 ]
 generative_modeling = [
   "flow-matching>=1.0.10",
