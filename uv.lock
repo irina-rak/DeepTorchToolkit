@@ -630,6 +630,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "lightning" },
+    { name = "lpips" },
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -687,6 +688,7 @@ requires-dist = [
     { name = "einops", marker = "extra == 'monai'", specifier = ">=0.8.1" },
     { name = "flow-matching", marker = "extra == 'generative-modeling'", specifier = ">=1.0.10" },
     { name = "lightning", specifier = ">=2.4.0" },
+    { name = "lpips", specifier = ">=0.1.4" },
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "monai", marker = "extra == 'monai'", specifier = ">=1.4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
@@ -1167,6 +1169,24 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b8/39/6fc58ca81492db047149b4b8fd385aa1bfb8c28cd7cacb0c7eb0c44d842f/lightning_utilities-0.15.2.tar.gz", hash = "sha256:cdf12f530214a63dacefd713f180d1ecf5d165338101617b4742e8f22c032e24", size = 31090, upload-time = "2025-08-06T13:57:39.242Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/73/3d757cb3fc16f0f9794dd289bcd0c4a031d9cf54d8137d6b984b2d02edf3/lightning_utilities-0.15.2-py3-none-any.whl", hash = "sha256:ad3ab1703775044bbf880dbf7ddaaac899396c96315f3aa1779cec9d618a9841", size = 29431, upload-time = "2025-08-06T13:57:38.046Z" },
+]
+
+[[package]]
+name = "lpips"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e8/2d/4b8148d32f5bd461eb7d5daa54fcc998f86eaa709a57f4ef6aa4c62f024f/lpips-0.1.4.tar.gz", hash = "sha256:3846331df6c69688aec3d300a5eeef6c529435bc8460bd58201c3d62e56188fa", size = 18029, upload-time = "2021-08-25T22:10:32.803Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/13/1df50c7925d9d2746702719f40e864f51ed66f307b20ad32392f1ad2bb87/lpips-0.1.4-py3-none-any.whl", hash = "sha256:fd537af5828b69d2e6ffc0a397bd506dbc28ca183543617690844c08e102ec5e", size = 53763, upload-time = "2021-08-25T22:10:31.257Z" },
 ]
 
 [[package]]
