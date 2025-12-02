@@ -1,0 +1,136 @@
+# Latent Diffusion Model U-Net configuration for 2D chest X-ray
+# Stage 2: Train diffusion model in latent space of pre-trained autoencoder
+#
+# Prerequisites:
+#   1. Train a VAE or VQ-VAE first (see vae_cxr2d.yaml or vqvae_cxr2d.yaml)
+#   2. Update autoencoder_checkpoint path below
+#
+# Usage:
+#   dtt train configs/latent_diffusion/ldm_unet_cxr2d.yaml
+
+seed: 4294967295
+# seed: 42
+save_dir: experiments/ldm
+
+trainer:
+  max_epochs: 200
+  accelerator: gpu
+  strategy: auto
+  devices: [0, 1, 2, 3]
+  precision: bf16-mixed
+  log_every_n_steps: 10
+  gradient_clip_val: 1.0
+
+model:
+  name: ldm_unet
+
+  optim:
+    name: adamw
+    lr: 1e-4
+    weight_decay: 1e-2
+
+  scheduler:
+    name: cosine
+    params:
+      T_max: ${trainer.max_epochs}
+      eta_min: 1e-6
+
+  params:
+    # Pre-trained autoencoder configuration (REQUIRED)
+    autoencoder_checkpoint: null # path to pre-trained VAE or VQ-VAE checkpoint
+    autoencoder_type: vae  # Options: vae, vqvae
+    autoencoder_config:
+      spatial_dims: 2
+      in_channels: 1
+      out_channels: 1
+      channels: [128, 128, 256]
+      num_res_blocks: 2
+      latent_channels: 3
+      attention_levels: [false, false, false]
+      norm_num_groups: 32
+      with_encoder_nonlocal_attn: false
+      with_decoder_nonlocal_attn: false
+    scale_factor: 1.0  # Scaling for latent space (computed automatically from data)
+    
+    # Pre-trained UNet (optional - set to load weights instead of training from scratch)
+    # unet_checkpoint: outputs/trained_models/monai_ldm_mednist/ldm_unet.pt
+
+    # DiffusionModelUNet architecture
+    spatial_dims: 2
+    in_channels: 3   # Must match autoencoder's latent_channels
+    out_channels: 3  # Must match autoencoder's latent_channels
+    num_res_blocks: 2
+    channels: [128, 256, 512]
+    attention_levels: [false, true, true]
+    norm_num_groups: 32
+    num_head_channels: [0, 256, 512]
+    resblock_updown: false
+    use_flash_attention: false
+
+    # Conditioning (optional)
+    with_conditioning: false
+    cross_attention_dim: null
+    num_class_embeds: null
+
+    # Diffusion settings
+    num_train_timesteps: 1000
+    beta_start: 0.0015
+    beta_end: 0.0195
+    beta_schedule: linear_beta  # Options: linear_beta, scaled_linear_beta, sigmoid_beta, cosine
+    prediction_type: epsilon  # Options: epsilon, v_prediction
+
+    # Training settings
+    manual_accumulate_grad_batches: 1
+    seed: ${seed}
+    _logging: true
+
+    # EMA settings
+    use_ema: false
+    ema_decay: 0.9999
+
+    # Validation generation settings
+    generate_validation_samples: true
+    generate_frequency: 20
+    val_max_batches: 2
+    num_inference_steps: 1000 # 50
+
+data:
+  name: data.medical2d
+  batch_size: 48  # Choose smaller batch if memory is an issue
+  num_workers: 4
+  params:
+    json_train: null  # path to JSON file with train data: [{"image": "path/to/img", "label": "path/to/label"}]
+    json_val: null    # path to JSON file with validation data
+    cache_rate: 1.0
+    synthetic: false
+    spatial_size: [128, 128]
+
+logger:
+  wandb:
+    project: ldm_cxr2d
+    name: ldm_run_ema_${model.params.use_ema}
+    entity: null
+    tags: ["ldm", "latent_diffusion", "chest_xray", "ldm_stage2"]
+    mode: online
+    api_key: null # Your wandb API key or set via WANDB_API_KEY env variable
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    save_top_k: 3
+    mode: min
+    filename: "ldm_epoch_{epoch:02d}_valloss_{val/loss:.4f}"
+    save_last: true
+    verbose: true
+    auto_insert_metric_name: false
+
+  early_stopping: # Optional - comment out to disable
+    monitor: val/loss
+    patience: 30
+    mode: min
+    min_delta: 0.001
+    verbose: true
+
+  lr_monitor:
+    logging_interval: epoch
+    log_momentum: false

@@ -1,0 +1,106 @@
+# VAE (AutoencoderKL) configuration for 2D chest X-ray
+# Stage 1 of Latent Diffusion Model training
+#
+# Usage:
+#   dtt train configs/latent_diffusion/vae_cxr2d.yaml
+
+seed: 4294967295
+save_dir: experiments/vae_gan
+
+trainer:
+  max_epochs: 200
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  devices: [0, 1, 2, 3]
+  precision: bf16-mixed
+  log_every_n_steps: 10
+  gradient_clip_val: 1.0
+
+model:
+  name: vae
+
+  optim:
+    name: adamw
+    lr: 1e-4
+    weight_decay: 1e-2
+
+  scheduler:
+    name: cosine
+    params:
+      T_max: ${trainer.max_epochs}
+      eta_min: 1e-6
+
+  params:
+    # AutoencoderKL architecture
+    spatial_dims: 2
+    in_channels: 1
+    out_channels: 1
+    channels: [128, 128, 256]
+    num_res_blocks: 2
+    latent_channels: 3  # Latent space channels (typically 4 for LDMs)
+    attention_levels: [false, false, false]
+    norm_num_groups: 32
+    with_encoder_nonlocal_attn: false
+    with_decoder_nonlocal_attn: false
+    use_flash_attention: false
+    use_convtranspose: false
+
+    # Loss weights
+    kl_weight: 1e-6  # Small KL weight for stable training
+    perceptual_weight: 0.001  # Set > 0 to enable perceptual loss (RadImageNet)
+    adversarial_weight: 0.01  # GAN loss weight. Set to 0 to disable GAN training.
+    reconstruction_loss: l1  # Options: l1, l2, mse
+
+    # Discriminator architecture (only used if adversarial_weight > 0)
+    discriminator_channels: 64
+    discriminator_num_layers: 3
+
+    # GAN training settings
+    disc_start_epoch: 10  # Warm-up reconstruction (usually epochs/10)
+    disc_loss_type: hinge  # Options: hinge, vanilla, least_squares
+    disc_lr: 5e-4  # Discriminator learning rate (often higher than generator)
+
+    # Training settings
+    seed: ${seed}
+    _logging: true
+
+data:
+  name: data.medical2d
+  batch_size: 48 # Choose smaller batch if memory is an issue
+  num_workers: 4
+  params:
+    json_train: null  # path to JSON file with train data: [{"image": "path/to/img", "label": "path/to/label"}]
+    json_val: null    # path to JSON file with validation data
+    cache_rate: 1.0
+    synthetic: false
+    spatial_size: [128, 128]
+
+logger:
+  wandb:
+    project: vae_cxr2d
+    name: vae_gan_run
+    entity: null
+    tags: ["vae", "autoencoder", "chest_xray", "ldm_stage1", "gan"]
+    mode: online
+    api_key: null # Your wandb API key or set via WANDB_API_KEY env variable
+
+callbacks:
+  model_checkpoint:
+    monitor: val/loss
+    save_top_k: 3
+    mode: min
+    filename: "vae_epoch_{epoch:02d}_valloss_{val/loss:.4f}"
+    save_last: true
+    verbose: true
+    auto_insert_metric_name: false
+
+  # early_stopping:
+  #   monitor: val/loss
+  #   patience: 20
+  #   mode: min
+  #   min_delta: 0.001
+  #   verbose: true
+
+  lr_monitor:
+    logging_interval: epoch
+    log_momentum: false
