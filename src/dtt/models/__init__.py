@@ -8,3 +8,4 @@ from dtt.models.latent_diffusion import (
     vqvae,  # noqa: F401
 )
 from dtt.models.unet import unet  # noqa: F401
+from dtt.models.wavelet_diffusion import wavelet_diffusion  # noqa: F401
