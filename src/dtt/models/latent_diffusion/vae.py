@@ -3,6 +3,11 @@
 This module implements a VAE for learning a continuous latent space,
 which can be used as the first stage of a Latent Diffusion Model.
 
+Supports two-stage training for high-resolution images:
+    Stage 1 ("patch"): Train full VAE on small patches to learn fine details
+    Stage 2 ("full_image"): Freeze encoder, train decoder on full images
+        using sliding window encoding for global coherence
+
 GAN training (adversarial loss) significantly improves reconstruction quality
 by producing sharper, more realistic outputs compared to pure reconstruction loss.
 """
@@ -75,6 +80,27 @@ def build_vae(cfg: dict[str, Any]):
                 # Training settings
                 seed: int | None (default: None)
                 _logging: bool (default: True)
+                manual_accumulate_grad_batches: int (default: 1)
+                    Manual gradient accumulation steps. Since VAE uses manual
+                    optimization for GAN training, Lightning's accumulate_grad_batches
+                    doesn't work. Use this instead for memory efficiency.
+
+                # Evaluation settings
+                eval_frequency: int (default: 1)
+                    Frequency (in epochs) for saving reconstruction samples
+
+                # Two-stage training settings
+                training_stage: str (default: "patch")
+                    Training stage: "patch" (stage 1) or "full_image" (stage 2)
+                    - "patch": Train full VAE on patches (default behavior)
+                    - "full_image": Freeze encoder, train decoder with sliding window
+                encoder_checkpoint: str | None (default: None)
+                    Path to stage 1 checkpoint for loading frozen encoder (stage 2 only)
+                sliding_window_patch_size: list[int] | None (default: None)
+                    Patch size for sliding window encoding in stage 2
+                    If None, uses same size as training patches
+                sliding_window_overlap: float (default: 0.25)
+                    Overlap ratio for sliding window (0.0 to 0.5)
     """
     import torch
     import torch.nn.functional as functional
@@ -196,12 +222,27 @@ def build_vae(cfg: dict[str, Any]):
             # Logging settings
             self._logging = p.get("_logging", True)
 
+            # Manual gradient accumulation (since automatic_optimization=False)
+            self.manual_accumulate_grad_batches = p.get("manual_accumulate_grad_batches", 1)
+
+            # Evaluation settings
+            self.eval_frequency = p.get("eval_frequency", 1)
+
             # Store optimizer and scheduler configs
             self.optim_cfg = mcfg.optim
             self.scheduler_cfg = mcfg.scheduler
 
             # Store spatial dims for metrics
             self.spatial_dims = spatial_dims
+
+            # Two-stage training settings
+            self.training_stage = p.get("training_stage", "patch").lower()
+            self.encoder_checkpoint = p.get("encoder_checkpoint")
+            self.sliding_window_patch_size = p.get("sliding_window_patch_size")
+            self.sliding_window_overlap = p.get("sliding_window_overlap", 0.25)
+
+            if self.training_stage == "full_image":
+                self._setup_stage2_training()
 
             self.save_hyperparameters(ignore=["model", "discriminator", "perceptual_loss"])
 
@@ -215,15 +256,129 @@ def build_vae(cfg: dict[str, Any]):
             z = self.model.sampling(z_mu, z_sigma)
             return z, z_mu, z_sigma
 
+        def _setup_stage2_training(self):
+            """Setup for stage 2 training: freeze encoder, load checkpoint."""
+            console.log(
+                "[bold cyan]Setting up Stage 2 training (full image with frozen encoder)[/bold cyan]"
+            )
+
+            # Load encoder weights from stage 1 checkpoint
+            if self.encoder_checkpoint is not None:
+                import os
+
+                if os.path.exists(self.encoder_checkpoint):
+                    checkpoint = torch.load(
+                        self.encoder_checkpoint, map_location="cpu", weights_only=False
+                    )
+                    if "state_dict" in checkpoint:
+                        state_dict = checkpoint["state_dict"]
+                        # Filter to only encoder weights
+                        encoder_state = {
+                            k.replace("model.", ""): v
+                            for k, v in state_dict.items()
+                            if k.startswith("model.") and "encoder" in k
+                        }
+                        # Load encoder weights
+                        self.model.load_state_dict(encoder_state, strict=False)
+                        console.log(
+                            f"[green]Loaded encoder from: {self.encoder_checkpoint}[/green]"
+                        )
+                else:
+                    console.log(
+                        f"[yellow]Warning: encoder_checkpoint not found: {self.encoder_checkpoint}[/yellow]"
+                    )
+
+            # Freeze encoder
+            for name, param in self.model.named_parameters():
+                if "encoder" in name or "quant_conv" in name:
+                    param.requires_grad = False
+
+            # Count frozen vs trainable parameters
+            frozen = sum(p.numel() for p in self.model.parameters() if not p.requires_grad)
+            trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            console.log(
+                f"[cyan]Encoder frozen: {frozen:,} params, Decoder trainable: {trainable:,} params[/cyan]"
+            )
+
+        @torch.no_grad()
+        def encode_sliding_window(
+            self, x: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            """Encode full image using sliding window for stage 2 training.
+
+            Args:
+                x: Full image tensor (B, C, *spatial_dims)
+
+            Returns:
+                z: Stitched latent tensor
+                z_mu: Mean of latent distribution
+                z_sigma: Std of latent distribution
+            """
+            from monai.inferers import SlidingWindowInferer
+
+            # Determine patch size for sliding window
+            if self.sliding_window_patch_size is not None:
+                patch_size = self.sliding_window_patch_size
+            else:
+                # Default to reasonable patch size based on spatial dims
+                if self.spatial_dims == 3:
+                    patch_size = [64, 64, 64]
+                else:
+                    patch_size = [128, 128]
+
+            # Create inferer for encoding
+            inferer = SlidingWindowInferer(
+                roi_size=patch_size,
+                sw_batch_size=1,
+                overlap=self.sliding_window_overlap,
+                mode="gaussian",
+                sigma_scale=0.125,
+            )
+
+            # Encode using sliding window
+            def encode_fn(patch):
+                z_mu, z_sigma = self.model.encode(patch)
+                z = self.model.sampling(z_mu, z_sigma)
+                # Return concatenated for single-output inferer, then split later
+                return torch.cat([z, z_mu, z_sigma], dim=1)
+
+            # Run sliding window encoding
+            output = inferer(x, encode_fn)
+
+            # Split the concatenated output
+            latent_channels = output.shape[1] // 3
+            z = output[:, :latent_channels]
+            z_mu = output[:, latent_channels : 2 * latent_channels]
+            z_sigma = output[:, 2 * latent_channels :]
+
+            return z, z_mu, z_sigma
+
         def decode(self, z: torch.Tensor) -> torch.Tensor:
             """Decode latent to reconstruction."""
             return self.model.decode(z)
 
         def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Forward pass: encode and decode."""
-            z, z_mu, z_sigma = self.encode(x)
+            """Forward pass: encode and decode.
+
+            In stage 2 (full_image), uses sliding window encoding.
+            """
+            if self.training_stage == "full_image" and self.training:
+                # Stage 2: sliding window encoding (frozen encoder)
+                z, z_mu, z_sigma = self.encode_sliding_window(x)
+            else:
+                # Stage 1 or inference: regular encoding
+                z, z_mu, z_sigma = self.encode(x)
+
             recon = self.decode(z)
             return recon, z_mu, z_sigma
+
+        def _is_last_batch(self, batch_idx: int) -> bool:
+            """Check if this is the last batch in the epoch."""
+            try:
+                train_loader = self.trainer.datamodule.train_dataloader()
+                return batch_idx == len(train_loader) - 1
+            except Exception:
+                return False
 
         def _compute_reconstruction_loss(
             self, recon: torch.Tensor, target: torch.Tensor
@@ -311,7 +466,7 @@ def build_vae(cfg: dict[str, Any]):
         def training_step(
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
-            """Training step with GAN training."""
+            """Training step with GAN training and manual gradient accumulation."""
             images = batch["image"]
 
             # Get optimizers
@@ -326,8 +481,13 @@ def build_vae(cfg: dict[str, Any]):
                 self.discriminator is not None and self.current_epoch >= self.disc_start_epoch
             )
 
+            # Determine if we should accumulate or step
+            accumulate = self.manual_accumulate_grad_batches
+            should_step = (batch_idx + 1) % accumulate == 0 or self._is_last_batch(batch_idx)
+
             # ==================== Generator (VAE) Update ====================
-            opt_g.zero_grad()
+            if should_step or batch_idx % accumulate == 0:
+                opt_g.zero_grad()
 
             # Forward pass
             recon, z_mu, z_sigma = self(images)
@@ -354,14 +514,18 @@ def build_vae(cfg: dict[str, Any]):
                 g_adv_loss = self._compute_generator_adversarial_loss(fake_logits)
                 g_loss = g_loss + self.adversarial_weight * g_adv_loss
 
-            # Backward and update generator
-            self.manual_backward(g_loss)
-            opt_g.step()
+            # Backward (scale loss for gradient accumulation)
+            self.manual_backward(g_loss / accumulate)
+
+            # Step optimizer only when accumulation is complete
+            if should_step:
+                opt_g.step()
 
             # ==================== Discriminator Update ====================
             d_loss = torch.tensor(0.0, device=self.device)
             if disc_active and opt_d is not None:
-                opt_d.zero_grad()
+                if should_step or batch_idx % accumulate == 0:
+                    opt_d.zero_grad()
 
                 # Get discriminator predictions
                 with torch.no_grad():
@@ -373,9 +537,12 @@ def build_vae(cfg: dict[str, Any]):
                 # Discriminator loss
                 d_loss = self._compute_discriminator_loss(real_logits, fake_logits)
 
-                # Backward and update discriminator
-                self.manual_backward(d_loss)
-                opt_d.step()
+                # Backward (scale loss for gradient accumulation)
+                self.manual_backward(d_loss / accumulate)
+
+                # Step optimizer only when accumulation is complete
+                if should_step:
+                    opt_d.step()
 
             # Logging
             if self._logging:
@@ -423,7 +590,9 @@ def build_vae(cfg: dict[str, Any]):
             if not self.trainer.is_global_zero:
                 return
 
-            self._save_reconstruction_samples()
+            # Only save samples at eval_frequency intervals
+            if self.current_epoch % self.eval_frequency == 0:
+                self._save_reconstruction_samples()
 
         def _save_reconstruction_samples(self, max_samples: int = 1):
             """Save reconstruction samples for visual monitoring."""
@@ -584,8 +753,20 @@ def build_vae(cfg: dict[str, Any]):
 
         def configure_optimizers(self):
             """Configure optimizer and scheduler for GAN training."""
-            # Generator optimizer
-            opt_g = build_optimizer(self.model.parameters(), self.optim_cfg)
+            # In stage 2, only optimize decoder parameters
+            if self.training_stage == "full_image":
+                decoder_params = [
+                    p
+                    for n, p in self.model.named_parameters()
+                    if p.requires_grad and ("decoder" in n or "post_quant_conv" in n)
+                ]
+                opt_g = build_optimizer(decoder_params, self.optim_cfg)
+                console.log(
+                    f"[cyan]Stage 2: Optimizing {len(decoder_params)} decoder parameter groups[/cyan]"
+                )
+            else:
+                # Stage 1: optimize full model
+                opt_g = build_optimizer(self.model.parameters(), self.optim_cfg)
 
             optimizers = [opt_g]
             schedulers = []

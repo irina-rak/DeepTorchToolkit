@@ -79,6 +79,14 @@ def build_vqvae(cfg: dict[str, Any]):
                 # Training settings
                 seed: int | None (default: None)
                 _logging: bool (default: True)
+                manual_accumulate_grad_batches: int (default: 1)
+                    Manual gradient accumulation steps. Since VQ-VAE uses manual
+                    optimization for GAN training, Lightning's accumulate_grad_batches
+                    doesn't work. Use this instead for memory efficiency.
+
+                # Evaluation settings
+                eval_frequency: int (default: 1)
+                    Frequency (in epochs) for saving reconstruction samples
     """
     import torch
     import torch.nn.functional as functional
@@ -211,6 +219,12 @@ def build_vqvae(cfg: dict[str, Any]):
             # Logging settings
             self._logging = p.get("_logging", True)
 
+            # Manual gradient accumulation (since automatic_optimization=False)
+            self.manual_accumulate_grad_batches = p.get("manual_accumulate_grad_batches", 1)
+
+            # Evaluation settings
+            self.eval_frequency = p.get("eval_frequency", 1)
+
             # Store optimizer and scheduler configs
             self.optim_cfg = mcfg.optim
             self.scheduler_cfg = mcfg.scheduler
@@ -234,6 +248,14 @@ def build_vqvae(cfg: dict[str, Any]):
             """Forward pass: encode, quantize, and decode."""
             recon, quantization_loss = self.model(x)
             return recon, quantization_loss
+
+        def _is_last_batch(self, batch_idx: int) -> bool:
+            """Check if this is the last batch in the epoch."""
+            try:
+                train_loader = self.trainer.datamodule.train_dataloader()
+                return batch_idx == len(train_loader) - 1
+            except Exception:
+                return False
 
         def _compute_reconstruction_loss(
             self, recon: torch.Tensor, target: torch.Tensor
@@ -308,7 +330,7 @@ def build_vqvae(cfg: dict[str, Any]):
         def training_step(
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
-            """Training step with GAN training."""
+            """Training step with GAN training and manual gradient accumulation."""
             images = batch["image"]
 
             # Get optimizers
@@ -323,8 +345,13 @@ def build_vqvae(cfg: dict[str, Any]):
                 self.discriminator is not None and self.current_epoch >= self.disc_start_epoch
             )
 
+            # Determine if we should accumulate or step
+            accumulate = self.manual_accumulate_grad_batches
+            should_step = (batch_idx + 1) % accumulate == 0 or self._is_last_batch(batch_idx)
+
             # ==================== Generator (VQ-VAE) Update ====================
-            opt_g.zero_grad()
+            if should_step or batch_idx % accumulate == 0:
+                opt_g.zero_grad()
 
             # Forward pass
             recon, quantization_loss = self(images)
@@ -348,14 +375,18 @@ def build_vqvae(cfg: dict[str, Any]):
                 g_adv_loss = self._compute_generator_adversarial_loss(fake_logits)
                 g_loss = g_loss + self.adversarial_weight * g_adv_loss
 
-            # Backward and update generator
-            self.manual_backward(g_loss)
-            opt_g.step()
+            # Backward (scale loss for gradient accumulation)
+            self.manual_backward(g_loss / accumulate)
+
+            # Step optimizer only when accumulation is complete
+            if should_step:
+                opt_g.step()
 
             # ==================== Discriminator Update ====================
             d_loss = torch.tensor(0.0, device=self.device)
             if disc_active and opt_d is not None:
-                opt_d.zero_grad()
+                if should_step or batch_idx % accumulate == 0:
+                    opt_d.zero_grad()
 
                 # Get discriminator predictions
                 with torch.no_grad():
@@ -367,9 +398,12 @@ def build_vqvae(cfg: dict[str, Any]):
                 # Discriminator loss
                 d_loss = self._compute_discriminator_loss(real_logits, fake_logits)
 
-                # Backward and update discriminator
-                self.manual_backward(d_loss)
-                opt_d.step()
+                # Backward (scale loss for gradient accumulation)
+                self.manual_backward(d_loss / accumulate)
+
+                # Step optimizer only when accumulation is complete
+                if should_step:
+                    opt_d.step()
 
             # Logging
             if self._logging:
@@ -434,7 +468,9 @@ def build_vqvae(cfg: dict[str, Any]):
             if not self.trainer.is_global_zero:
                 return
 
-            self._save_reconstruction_samples()
+            # Only save samples at eval_frequency intervals
+            if self.current_epoch % self.eval_frequency == 0:
+                self._save_reconstruction_samples()
 
         def _save_reconstruction_samples(self, max_samples: int = 4):
             """Save reconstruction samples for visual monitoring."""
