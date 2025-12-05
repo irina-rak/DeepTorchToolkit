@@ -6,6 +6,7 @@ from collections.abc import Sequence
 def get_train_transforms(
     patch_size: Sequence[int] | tuple[int, int, int] = (96, 96, 96),
     pixdim: Sequence[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
+    margin: int = 25,
     random_patch: bool = False,
 ) -> list[object]:
     try:
@@ -31,7 +32,7 @@ def get_train_transforms(
             Orientationd(keys=["image", "label"], axcodes="RAS"),
             Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear")),
             CropForegroundd(
-                keys=["image", "label"], source_key="image", margin=10
+                keys=["image", "label"], source_key="image", margin=margin
             ),  # crop out black borders - be careful with this
             ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0),
             NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
@@ -81,15 +82,17 @@ def get_train_transforms(
 def get_val_transforms(
     patch_size: Sequence[int] | tuple[int, int, int] = (96, 96, 96),
     pixdim: Sequence[float] | tuple[float, float, float] = (1.0, 1.0, 1.0),
+    margin: int = 25,
 ) -> list[object]:
     try:
         from monai.transforms import (
+            CenterSpatialCropd,
             Compose,
+            CropForegroundd,
             EnsureChannelFirstd,
             LoadImaged,
             NormalizeIntensityd,
             Orientationd,
-            RandCropByPosNegLabeld,
             ScaleIntensityRanged,
             Spacingd,
             SpatialPadd,
@@ -103,15 +106,22 @@ def get_val_transforms(
                 Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear")),
                 ScaleIntensityRanged(keys=["image"], a_min=0, a_max=255, b_min=0.0, b_max=1.0),
                 NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
-                RandCropByPosNegLabeld(
+                CropForegroundd(
+                    keys=["image", "label"], source_key="image", margin=margin
+                ),  # crop out black borders - be careful with this
+                # RandCropByPosNegLabeld(
+                #     keys=["image", "label"],
+                #     label_key="label",
+                #     spatial_size=patch_size,
+                #     pos=1,
+                #     neg=1,
+                #     num_samples=1,
+                #     image_key="image",
+                #     image_threshold=0,
+                # ),
+                CenterSpatialCropd(
                     keys=["image", "label"],
-                    label_key="label",
-                    spatial_size=patch_size,
-                    pos=1,
-                    neg=1,
-                    num_samples=1,
-                    image_key="image",
-                    image_threshold=0,
+                    roi_size=patch_size,
                 ),
                 SpatialPadd(
                     keys=["image", "label"],

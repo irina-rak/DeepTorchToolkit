@@ -242,6 +242,8 @@ def build_ldm_unet(cfg: dict[str, Any]):
                     norm_num_groups=ae_cfg.get("norm_num_groups", 32),
                     with_encoder_nonlocal_attn=ae_cfg.get("with_encoder_nonlocal_attn", True),
                     with_decoder_nonlocal_attn=ae_cfg.get("with_decoder_nonlocal_attn", True),
+                    use_flash_attention=ae_cfg.get("use_flash_attention", False),
+                    use_convtranspose=ae_cfg.get("use_convtranspose", False),
                 )
             elif self.autoencoder_type == "vqvae":
                 autoencoder = VQVAE(

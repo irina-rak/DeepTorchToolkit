@@ -40,6 +40,7 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
     synthetic = bool(params.get("synthetic", True))
     spatial_size = tuple(params.get("spatial_size", [256, 256, 256]))
     pixdim = tuple(params.get("pixdim", [1.0, 1.0, 1.0]))
+    margin = int(params.get("margin", 25))
     random_patch = bool(params.get("random_patch", False))
 
     class _Synthetic3DDataset:
@@ -84,7 +85,10 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
                     cache_rate=cache_rate,
                     num_workers=num_workers,
                     transforms=get_train_transforms(
-                        patch_size=spatial_size, pixdim=pixdim, random_patch=random_patch
+                        patch_size=spatial_size,
+                        pixdim=pixdim,
+                        margin=margin,
+                        random_patch=random_patch,
                     ),
                 )
 
@@ -92,7 +96,9 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
                     data_dir=json_val,
                     cache_rate=cache_rate,
                     num_workers=num_workers,
-                    transforms=get_val_transforms(patch_size=spatial_size, pixdim=pixdim),
+                    transforms=get_val_transforms(
+                        patch_size=spatial_size, pixdim=pixdim, margin=margin
+                    ),
                 )
 
                 # Wrap datasets to handle list output from RandCropByPosNegLabeld
