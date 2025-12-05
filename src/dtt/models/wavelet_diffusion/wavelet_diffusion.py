@@ -499,6 +499,178 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             return {"loss": loss}
 
+        def on_validation_epoch_end(self) -> None:
+            """Run sampling for visualization during training.
+
+            Generation is configurable and runs only every N epochs to avoid
+            excessive computational overhead during training.
+            """
+            # Avoid duplicate work under DDP - only rank 0 computes generation metrics
+            if hasattr(self.trainer, "is_global_zero") and not self.trainer.is_global_zero:
+                return
+
+            # Check if generation is enabled and if it's time to generate
+            should_generate = (
+                self.generate_validation_samples
+                and self.current_epoch % self.generate_frequency == 0
+            )
+
+            if not should_generate:
+                return
+
+            # Generate samples and compute metrics
+            self._compute_generation_metrics(max_batches=self.val_max_batches)
+
+        def _compute_generation_metrics(self, max_batches: int = 3):
+            """Compute generation metrics and save sample visualizations.
+
+            Args:
+                max_batches: Number of validation batches to evaluate
+            """
+            val_loader = self.trainer.datamodule.val_dataloader()
+
+            psnr_scores = []
+            ssim_scores = []
+
+            # Use EMA model for generation if available
+            model_to_use = self.model_ema if self.use_ema else self.model
+            model_to_use.eval()
+
+            # Only use progress bar on rank 0 to avoid file handle issues in DDP
+            use_progress = (
+                not hasattr(self.trainer, "is_global_zero") or self.trainer.is_global_zero
+            )
+
+            if use_progress:
+                from rich.progress import (
+                    BarColumn,
+                    Progress,
+                    SpinnerColumn,
+                    TextColumn,
+                    TimeElapsedColumn,
+                )
+
+                progress_ctx = Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    TimeElapsedColumn(),
+                    console=console,
+                )
+            else:
+                from contextlib import nullcontext
+
+                progress_ctx = nullcontext()
+
+            with progress_ctx as progress:
+                if use_progress:
+                    task = progress.add_task(
+                        f"[cyan]Computing generation metrics (epoch {self.current_epoch})...",
+                        total=max_batches,
+                    )
+
+                with torch.no_grad():
+                    for i, batch in enumerate(val_loader):
+                        if i >= max_batches:
+                            break
+
+                        imgs_original = batch["image"].to(self.device)
+
+                        # Determine shape for generation
+                        if self.spatial_dims == 2:
+                            shape = (self.base_channels, *imgs_original.shape[2:])
+                        else:
+                            shape = (self.base_channels, *imgs_original.shape[2:])
+
+                        # Generate samples
+                        generated = self.sample(
+                            batch_size=imgs_original.shape[0],
+                            shape=shape,
+                            num_inference_steps=self.inference_timesteps,
+                        )
+
+                        # Compute metrics
+                        psnr = self.psnr_metric(generated, imgs_original)
+                        ssim = self.ssim_metric(generated, imgs_original)
+                        psnr_scores.append(psnr.mean().item())
+                        ssim_scores.append(ssim.mean().item())
+
+                        # Save visualization for first batch
+                        if i == 0:
+                            self._save_generation_visualization(
+                                imgs_original, generated, self.current_epoch
+                            )
+
+                        if use_progress:
+                            progress.update(task, advance=1)
+
+            # Log aggregate metrics (sync_dist=False since only rank 0 computes)
+            if psnr_scores:
+                avg_psnr = sum(psnr_scores) / len(psnr_scores)
+                avg_ssim = sum(ssim_scores) / len(ssim_scores)
+                self.log("val/gen_psnr", avg_psnr, prog_bar=True, sync_dist=False)
+                self.log("val/gen_ssim", avg_ssim, prog_bar=True, sync_dist=False)
+                console.log(
+                    f"[bold green]Epoch {self.current_epoch} Generation:[/bold green] "
+                    f"PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.4f}"
+                )
+
+        def _save_generation_visualization(
+            self, original: torch.Tensor, generated: torch.Tensor, epoch: int
+        ):
+            """Save visualization comparing original and generated samples."""
+            import matplotlib.pyplot as plt
+
+            # Get output directory from trainer
+            output_dir = getattr(self.trainer, "log_dir", None)
+            if output_dir is None:
+                output_dir = os.path.join(os.getcwd(), "generation_outputs")
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Take first sample for visualization
+            orig = original[0].cpu()
+            gen = generated[0].cpu()
+
+            if self.spatial_dims == 2:
+                # 2D: Show side by side
+                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+                if orig.shape[0] == 1:
+                    axes[0].imshow(orig[0], cmap="gray")
+                    axes[1].imshow(gen[0], cmap="gray")
+                else:
+                    axes[0].imshow(orig.permute(1, 2, 0).numpy())
+                    axes[1].imshow(gen.permute(1, 2, 0).numpy())
+
+                axes[0].set_title("Original")
+                axes[0].axis("off")
+                axes[1].set_title("Generated")
+                axes[1].axis("off")
+            else:
+                # 3D: Show center slices
+                d = orig.shape[-1] // 2
+                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+                if orig.shape[0] == 1:
+                    axes[0].imshow(orig[0, :, :, d], cmap="gray")
+                    axes[1].imshow(gen[0, :, :, d], cmap="gray")
+                else:
+                    axes[0].imshow(orig[:, :, :, d].permute(1, 2, 0).numpy())
+                    axes[1].imshow(gen[:, :, :, d].permute(1, 2, 0).numpy())
+
+                axes[0].set_title("Original (center slice)")
+                axes[0].axis("off")
+                axes[1].set_title("Generated (center slice)")
+                axes[1].axis("off")
+
+            plt.suptitle(f"Epoch {epoch}")
+            save_path = os.path.join(output_dir, f"generation_epoch_{epoch:04d}.png")
+            plt.savefig(save_path, bbox_inches="tight", dpi=150)
+            plt.close(fig)
+
+            console.log(f"[dim]Saved generation visualization to {save_path}[/dim]")
+
         @torch.no_grad()
         def sample(
             self,
