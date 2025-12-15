@@ -76,10 +76,23 @@ class LRMonitorConfig(BaseModel):
     log_momentum: bool = False
 
 
+class EMAConfig(BaseModel):
+    """Configuration for EMA (Exponential Moving Average) callback.
+
+    EMA maintains a moving average of model weights for more stable inference.
+    Using swa_utils.AveragedModel ensures both parameters AND buffers are averaged.
+    """
+
+    decay: float = 0.9999  # EMA decay rate (higher = slower update, more stable)
+    update_every: int = 10  # Update every N steps (saves compute with minimal quality impact)
+    update_bn_on_train_end: bool = True  # Refresh BatchNorm stats after training
+
+
 class CallbacksConfig(BaseModel):
     model_checkpoint: ModelCheckpointConfig = Field(default_factory=ModelCheckpointConfig)
     early_stopping: EarlyStoppingConfig | None = None  # Optional - set to None to disable
     lr_monitor: LRMonitorConfig = Field(default_factory=LRMonitorConfig)
+    ema: EMAConfig | None = None  # Optional - set to enable EMA callback
 
 
 class InferenceConfig(BaseModel):

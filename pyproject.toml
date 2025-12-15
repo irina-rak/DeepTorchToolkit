@@ -54,6 +54,7 @@ monai = [
 ]
 generative_modeling = [
   "flow-matching>=1.0.10",
+  "PyWavelets>=1.4.0",
 ]
 all = [
   "deeptorchtoolkit[dev,torch,monai,generative_modeling]",
@@ -86,7 +87,14 @@ lint.ignore = [
   "E203",  # whitespace before ':' (Black-compatible)
   "E501",  # line length handled by formatter
   "B008",  # function call in argument defaults (required for Typer)
+  "B905",  # zip() without strict= (Python 3.10+, but can affect readability)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Wavelet diffusion module uses mathematical naming conventions (L/H for Low/High frequency)
+"src/dtt/models/wavelet_diffusion/dwt_idwt/*" = ["N801", "N803", "N806", "N812"]
+"src/dtt/models/wavelet_diffusion/wavelet_unet.py" = ["N803", "N806", "N812"]
+"src/dtt/models/wavelet_diffusion/wavelet_diffusion.py" = ["N812"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

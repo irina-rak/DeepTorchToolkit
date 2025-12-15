@@ -12,6 +12,29 @@ from dtt.utils.registry import get_datamodule, get_model
 console = get_console()
 
 
+def _save_config(cfg: dict[str, Any], run_dir: str) -> str:
+    """Save the configuration to the run directory for reproducibility.
+
+    This saves the fully resolved configuration (with all defaults and
+    interpolated values) so experiments can be exactly reproduced later.
+
+    Args:
+        cfg: Configuration dictionary (fully resolved)
+        run_dir: Directory for this run's outputs
+
+    Returns:
+        Path to the saved config file
+    """
+    import yaml
+
+    config_path = os.path.join(run_dir, "config.yaml")
+    with open(config_path, "w") as f:
+        yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+    console.log(f"[bold green]✓[/bold green] Saved config to: {config_path}")
+    return config_path
+
+
 def _setup_output_directory(cfg: dict[str, Any]) -> str:
     """Create and return the structured output directory for this run.
 
@@ -59,6 +82,9 @@ def run_training(cfg: dict[str, Any]) -> None:
     """Assemble and run the Trainer based on the config dict (already validated)."""
     # Setup structured output directory
     run_dir = _setup_output_directory(cfg)
+
+    # Save config for reproducibility
+    _save_config(cfg, run_dir)
 
     # Build logger with the run directory
     logger = make_wandb_logger(cfg, save_dir=run_dir)
