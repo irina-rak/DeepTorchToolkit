@@ -65,8 +65,8 @@ class DWT_1D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = wavelet.rec_lo
-        self.band_high = wavelet.rec_hi
+        self.band_low = wavelet.dec_lo
+        self.band_high = wavelet.dec_hi
         assert len(self.band_low) == len(self.band_high)
         self.band_length = len(self.band_low)
         assert self.band_length % 2 == 0
@@ -133,8 +133,8 @@ class IDWT_1D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = list(wavelet.dec_lo)
-        self.band_high = list(wavelet.dec_hi)
+        self.band_low = list(wavelet.rec_lo)
+        self.band_high = list(wavelet.rec_hi)
         self.band_low.reverse()
         self.band_high.reverse()
         assert len(self.band_low) == len(self.band_high)
@@ -204,8 +204,8 @@ class DWT_2D_tiny(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = wavelet.rec_lo
-        self.band_high = wavelet.rec_hi
+        self.band_low = wavelet.dec_lo
+        self.band_high = wavelet.dec_hi
         assert len(self.band_low) == len(self.band_high)
         self.band_length = len(self.band_low)
         assert self.band_length % 2 == 0
@@ -305,8 +305,8 @@ class DWT_2D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = wavelet.rec_lo
-        self.band_high = wavelet.rec_hi
+        self.band_low = wavelet.dec_lo
+        self.band_high = wavelet.dec_hi
         assert len(self.band_low) == len(self.band_high)
         self.band_length = len(self.band_low)
         assert self.band_length % 2 == 0
@@ -402,8 +402,8 @@ class IDWT_2D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = list(wavelet.dec_lo)
-        self.band_high = list(wavelet.dec_hi)
+        self.band_low = list(wavelet.rec_lo)
+        self.band_high = list(wavelet.rec_hi)
         self.band_low.reverse()
         self.band_high.reverse()
         assert len(self.band_low) == len(self.band_high)
@@ -511,8 +511,8 @@ class DWT_3D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = wavelet.rec_lo
-        self.band_high = wavelet.rec_hi
+        self.band_low = wavelet.dec_lo
+        self.band_high = wavelet.dec_hi
         assert len(self.band_low) == len(self.band_high)
         self.band_length = len(self.band_low)
         assert self.band_length % 2 == 0
@@ -628,8 +628,8 @@ class IDWT_3D(nn.Module):
     def __init__(self, wavename: str):
         super().__init__()
         wavelet = pywt.Wavelet(wavename)
-        self.band_low = list(wavelet.dec_lo)
-        self.band_high = list(wavelet.dec_hi)
+        self.band_low = list(wavelet.rec_lo)
+        self.band_high = list(wavelet.rec_hi)
         self.band_low.reverse()
         self.band_high.reverse()
         assert len(self.band_low) == len(self.band_high)

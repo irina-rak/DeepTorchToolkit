@@ -227,8 +227,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 - self.sqrt_recipm1_alphas_cumprod[t] * model_output
             )
 
-            # Clip prediction (optional, can help stability)
-            pred_original_sample = torch.clamp(pred_original_sample, -1, 1)
+            # NOTE: No clamping here - wavelet coefficients can exceed [-1,1]
+            # Clamping is only valid for pixel-space diffusion
 
             # Compute posterior mean
             posterior_mean = (
@@ -238,7 +238,15 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             # Add noise for t > 0
             if t > 0:
-                noise = torch.randn_like(sample, generator=generator)
+                if generator is not None:
+                    noise = torch.randn(
+                        sample.shape,
+                        dtype=sample.dtype,
+                        device=sample.device,
+                        generator=generator,
+                    )
+                else:
+                    noise = torch.randn_like(sample)
                 posterior_variance = self.posterior_variance[t]
                 prev_sample = posterior_mean + torch.sqrt(posterior_variance) * noise
             else:
@@ -327,18 +335,14 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             self.generate_frequency = p.get("generate_frequency", 5)
             self.val_max_batches = p.get("val_max_batches", 3)
 
-            # EMA settings
-            self.use_ema = p.get("use_ema", False)
-            self.ema_decay = p.get("ema_decay", 0.9999)
-            if self.use_ema:
-                self.model_ema = self._create_ema_model()
-                console.log(f"[bold cyan]EMA enabled with decay={self.ema_decay}[/bold cyan]")
-
             # Store optimizer and scheduler configs
             self.optim_cfg = mcfg.optim
             self.scheduler_cfg = mcfg.scheduler
 
-            self.save_hyperparameters(ignore=["model", "model_ema", "dwt", "idwt"])
+            # Note: EMA is now handled by EMACallback (configured in callbacks.ema)
+            # The callback will set self.ema_model at training start if enabled
+
+            self.save_hyperparameters(ignore=["model", "dwt", "idwt"])
 
             console.log("[bold green]Wavelet Diffusion initialized:[/bold green]")
             console.log(f"  - Spatial dims: {self.spatial_dims}")
@@ -346,24 +350,17 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             console.log(f"  - Apply wavelet transform: {self.apply_wavelet_transform}")
             console.log(f"  - Train timesteps: {num_train_timesteps}")
 
-        def _create_ema_model(self):
-            """Create EMA copy of the model."""
-            ema_model = copy.deepcopy(self.model)
-            ema_model.eval()
-            ema_model.requires_grad_(False)
-            return ema_model
+        def _get_inference_model(self):
+            """Get the model to use for inference (EMA if available, else main model).
 
-        def _update_ema(self):
-            """Update EMA model parameters."""
-            if not self.use_ema:
-                return
-            with torch.no_grad():
-                for ema_param, model_param in zip(
-                    self.model_ema.parameters(), self.model.parameters(), strict=True
-                ):
-                    ema_param.data.mul_(self.ema_decay).add_(
-                        model_param.data, alpha=1 - self.ema_decay
-                    )
+            The EMA model is set by EMACallback during on_fit_start if callbacks.ema
+            is configured. The callback uses swa_utils.AveragedModel which properly
+            handles both parameters and buffers.
+            """
+            ema = getattr(self, "ema_model", None)
+            if ema is not None:
+                return ema
+            return self.model
 
         def _normalize_data(self, x: torch.Tensor) -> torch.Tensor:
             """Normalize data to specified range."""
@@ -398,6 +395,7 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
         def on_fit_start(self):
             """Move scheduler to device when training starts."""
             self.scheduler.to(self.device)
+            # Note: EMA model device handling is now done by EMACallback
 
         def forward(self, x: torch.Tensor, timesteps: torch.Tensor, **kwargs) -> torch.Tensor:
             """Forward pass through the model."""
@@ -421,9 +419,6 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             should_step = (
                 (batch_idx + 1) % self.manual_accumulate_grad_batches == 0
             ) or is_last_batch
-
-            if should_step:
-                opt.zero_grad(set_to_none=True)
 
             # Sample noise and timesteps
             noise = torch.randn_like(wavelet_images)
@@ -452,8 +447,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             if should_step:
                 opt.step()
-                if self.use_ema:
-                    self._update_ema()
+                opt.zero_grad(set_to_none=True)  # Zero gradients AFTER stepping
+                # Note: EMA update is now handled by EMACallback.on_train_batch_end()
 
             if self._logging:
                 self.log(
@@ -469,6 +464,13 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
             """Validation step."""
+            # Cache first batch for sample generation (avoids DDP deadlock)
+            if batch_idx == 0:
+                self._cached_val_batch = {
+                    k: v.clone() if isinstance(v, torch.Tensor) else v
+                    for k, v in batch.items()
+                }
+
             images = batch["image"]
             images = self._normalize_data(images)
 
@@ -488,8 +490,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
-            # Use EMA model for validation if available
-            model = self.model_ema if self.use_ema else self.model
+            # Use EMA model for validation if available (set by EMACallback)
+            model = self._get_inference_model()
             noise_pred = model(noisy_images, timesteps)
 
             loss = self.mse_loss(noise_pred, noise)
@@ -500,176 +502,138 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             return {"loss": loss}
 
         def on_validation_epoch_end(self) -> None:
-            """Run sampling for visualization during training.
-
-            Generation is configurable and runs only every N epochs to avoid
-            excessive computational overhead during training.
-            """
-            # Avoid duplicate work under DDP - only rank 0 computes generation metrics
-            if hasattr(self.trainer, "is_global_zero") and not self.trainer.is_global_zero:
+            """Generate samples at the end of validation epoch."""
+            if not self.trainer.is_global_zero:
                 return
 
-            # Check if generation is enabled and if it's time to generate
             should_generate = (
                 self.generate_validation_samples
                 and self.current_epoch % self.generate_frequency == 0
             )
 
-            if not should_generate:
-                return
+            if should_generate:
+                self._generate_samples()
 
-            # Generate samples and compute metrics
-            self._compute_generation_metrics(max_batches=self.val_max_batches)
+        @torch.no_grad()
+        def _generate_samples(self, num_samples: int = 1):
+            """Generate samples using diffusion process."""
+            import matplotlib
 
-        def _compute_generation_metrics(self, max_batches: int = 3):
-            """Compute generation metrics and save sample visualizations.
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
 
-            Args:
-                max_batches: Number of validation batches to evaluate
-            """
-            val_loader = self.trainer.datamodule.val_dataloader()
+            console.log(f"[cyan]Generating {num_samples} samples...[/cyan]")
 
-            psnr_scores = []
-            ssim_scores = []
-
-            # Use EMA model for generation if available
-            model_to_use = self.model_ema if self.use_ema else self.model
+            # Use EMA model if available (set by EMACallback)
+            model_to_use = self._get_inference_model()
             model_to_use.eval()
 
-            # Only use progress bar on rank 0 to avoid file handle issues in DDP
-            use_progress = (
-                not hasattr(self.trainer, "is_global_zero") or self.trainer.is_global_zero
-            )
+            # Use cached validation batch (avoids DDP deadlock from dataloader iteration)
+            if not hasattr(self, "_cached_val_batch") or self._cached_val_batch is None:
+                console.log("[yellow]No cached validation batch, skipping generation[/yellow]")
+                return
 
-            if use_progress:
-                from rich.progress import (
-                    BarColumn,
-                    Progress,
-                    SpinnerColumn,
-                    TextColumn,
-                    TimeElapsedColumn,
+            images = self._cached_val_batch["image"].to(self.device)[:num_samples]
+
+            # Determine generation shape
+            shape = (self.base_channels, *images.shape[2:])
+
+            # Generate samples with mixed precision
+            with torch.autocast(device_type=self.device.type, enabled=(self.device.type == "cuda")):
+                generated = self.sample(
+                    batch_size=num_samples,
+                    shape=shape,
+                    num_inference_steps=self.inference_timesteps,
                 )
 
-                progress_ctx = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[bold blue]{task.description}"),
-                    BarColumn(),
-                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                    TimeElapsedColumn(),
-                    console=console,
-                )
-            else:
-                from contextlib import nullcontext
+            # Get log directory
+            log_dir = self._get_log_dir()
+            samples_dir = os.path.join(log_dir, "wavelet_diffusion_samples")
+            os.makedirs(samples_dir, exist_ok=True)
 
-                progress_ctx = nullcontext()
+            # Save comparison images
+            wandb_images = []
+            for i in range(min(num_samples, images.shape[0])):
+                orig = images[i].cpu().squeeze()
+                gen = generated[i].cpu().squeeze()
 
-            with progress_ctx as progress:
-                if use_progress:
-                    task = progress.add_task(
-                        f"[cyan]Computing generation metrics (epoch {self.current_epoch})...",
-                        total=max_batches,
-                    )
+                # Handle 3D: take center slice
+                if orig.dim() == 3:
+                    center = orig.shape[0] // 2
+                    orig = orig[center]
+                    gen = gen[center]
 
-                with torch.no_grad():
-                    for i, batch in enumerate(val_loader):
-                        if i >= max_batches:
-                            break
+                # Normalize for display
+                orig = (orig - orig.min()) / (orig.max() - orig.min() + 1e-8)
+                gen = (gen - gen.min()) / (gen.max() - gen.min() + 1e-8)
 
-                        imgs_original = batch["image"].to(self.device)
+                # Rotate for correct orientation
+                orig = np.rot90(orig.numpy(), k=-1)
+                gen = np.rot90(gen.numpy(), k=-1)
 
-                        # Determine shape for generation
-                        if self.spatial_dims == 2:
-                            shape = (self.base_channels, *imgs_original.shape[2:])
-                        else:
-                            shape = (self.base_channels, *imgs_original.shape[2:])
-
-                        # Generate samples
-                        generated = self.sample(
-                            batch_size=imgs_original.shape[0],
-                            shape=shape,
-                            num_inference_steps=self.inference_timesteps,
-                        )
-
-                        # Compute metrics
-                        psnr = self.psnr_metric(generated, imgs_original)
-                        ssim = self.ssim_metric(generated, imgs_original)
-                        psnr_scores.append(psnr.mean().item())
-                        ssim_scores.append(ssim.mean().item())
-
-                        # Save visualization for first batch
-                        if i == 0:
-                            self._save_generation_visualization(
-                                imgs_original, generated, self.current_epoch
-                            )
-
-                        if use_progress:
-                            progress.update(task, advance=1)
-
-            # Log aggregate metrics (sync_dist=False since only rank 0 computes)
-            if psnr_scores:
-                avg_psnr = sum(psnr_scores) / len(psnr_scores)
-                avg_ssim = sum(ssim_scores) / len(ssim_scores)
-                self.log("val/gen_psnr", avg_psnr, prog_bar=True, sync_dist=False)
-                self.log("val/gen_ssim", avg_ssim, prog_bar=True, sync_dist=False)
-                console.log(
-                    f"[bold green]Epoch {self.current_epoch} Generation:[/bold green] "
-                    f"PSNR={avg_psnr:.2f}, SSIM={avg_ssim:.4f}"
-                )
-
-        def _save_generation_visualization(
-            self, original: torch.Tensor, generated: torch.Tensor, epoch: int
-        ):
-            """Save visualization comparing original and generated samples."""
-            import matplotlib.pyplot as plt
-
-            # Get output directory from trainer
-            output_dir = getattr(self.trainer, "log_dir", None)
-            if output_dir is None:
-                output_dir = os.path.join(os.getcwd(), "generation_outputs")
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Take first sample for visualization
-            orig = original[0].cpu()
-            gen = generated[0].cpu()
-
-            if self.spatial_dims == 2:
-                # 2D: Show side by side
                 fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-
-                if orig.shape[0] == 1:
-                    axes[0].imshow(orig[0], cmap="gray")
-                    axes[1].imshow(gen[0], cmap="gray")
-                else:
-                    axes[0].imshow(orig.permute(1, 2, 0).numpy())
-                    axes[1].imshow(gen.permute(1, 2, 0).numpy())
-
+                axes[0].imshow(orig, cmap="gray")
                 axes[0].set_title("Original")
                 axes[0].axis("off")
+
+                axes[1].imshow(gen, cmap="gray")
                 axes[1].set_title("Generated")
                 axes[1].axis("off")
-            else:
-                # 3D: Show center slices
-                d = orig.shape[-1] // 2
-                fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
-                if orig.shape[0] == 1:
-                    axes[0].imshow(orig[0, :, :, d], cmap="gray")
-                    axes[1].imshow(gen[0, :, :, d], cmap="gray")
-                else:
-                    axes[0].imshow(orig[:, :, :, d].permute(1, 2, 0).numpy())
-                    axes[1].imshow(gen[:, :, :, d].permute(1, 2, 0).numpy())
+                plt.suptitle(f"Epoch {self.current_epoch}")
+                plt.tight_layout()
+                save_path = os.path.join(
+                    samples_dir, f"epoch_{self.current_epoch:04d}_sample_{i}.png"
+                )
+                plt.savefig(save_path, bbox_inches="tight", dpi=100)
+                plt.close(fig)
 
-                axes[0].set_title("Original (center slice)")
-                axes[0].axis("off")
-                axes[1].set_title("Generated (center slice)")
-                axes[1].axis("off")
+                # Collect for W&B logging
+                comparison = np.concatenate([orig, gen], axis=1)
+                wandb_images.append(comparison)
 
-            plt.suptitle(f"Epoch {epoch}")
-            save_path = os.path.join(output_dir, f"generation_epoch_{epoch:04d}.png")
-            plt.savefig(save_path, bbox_inches="tight", dpi=150)
-            plt.close(fig)
+            # Log images to W&B if available
+            if self.logger is not None and hasattr(self.logger, "experiment"):
+                try:
+                    import wandb
 
-            console.log(f"[dim]Saved generation visualization to {save_path}[/dim]")
+                    # Log as a grid of images
+                    self.logger.experiment.log(
+                        {
+                            "generated_samples": [
+                                wandb.Image(img, caption=f"Sample {i}")
+                                for i, img in enumerate(wandb_images)
+                            ],
+                            "epoch": self.current_epoch,
+                        }
+                    )
+                except Exception as e:
+                    console.log(f"[yellow]Could not log images to W&B: {e}[/yellow]")
+
+            console.log(f"[dim]Saved wavelet diffusion samples to: {samples_dir}[/dim]")
+
+        def _get_log_dir(self) -> str:
+            """Get the logging directory."""
+            log_dir = None
+
+            if self.trainer.logger is not None:
+                if hasattr(self.trainer.logger, "experiment"):
+                    if hasattr(self.trainer.logger.experiment, "dir"):
+                        log_dir = self.trainer.logger.experiment.dir
+                    elif hasattr(self.trainer.logger.experiment, "path"):
+                        log_dir = str(self.trainer.logger.experiment.path)
+
+                if not log_dir:
+                    if hasattr(self.trainer.logger, "save_dir") and self.trainer.logger.save_dir:
+                        log_dir = self.trainer.logger.save_dir
+                    elif hasattr(self.trainer.logger, "log_dir") and self.trainer.logger.log_dir:
+                        log_dir = self.trainer.logger.log_dir
+
+            if not log_dir or log_dir == ".":
+                log_dir = os.path.abspath(self.trainer.default_root_dir)
+
+            return log_dir
 
         @torch.no_grad()
         def sample(
@@ -691,7 +655,7 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 Generated samples in original image space
             """
             num_inference_steps = num_inference_steps or self.inference_timesteps
-            model = self.model_ema if self.use_ema else self.model
+            model = self._get_inference_model()
             model.eval()
 
             # Determine wavelet space shape

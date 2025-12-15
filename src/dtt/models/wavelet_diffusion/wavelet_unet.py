@@ -241,8 +241,10 @@ class WaveletGatingUpsample2D(nn.Module):
 class WaveletGatingDownsample3D(nn.Module):
     """Wavelet-gated downsampling for 3D volumes.
 
-    Uses 3D DWT to decompose input into 8 subbands,
-    applies learned gating to weight each subband, and sums them.
+    Uses 3D DWT to decompose input into 8 subbands (LLL + 7 detail subbands).
+    The LLL (low-frequency approximation) subband is preserved explicitly to
+    maintain structural information, while learned gating is applied only to
+    the 7 detail subbands which are then added to LLL.
     This results in a 2x downsampling in each spatial dimension.
     """
 
@@ -253,63 +255,78 @@ class WaveletGatingDownsample3D(nn.Module):
         self.fnn = nn.Sequential(
             nn.Linear(channels + temb_dim, 128),
             nn.SiLU(),
-            nn.Linear(128, 8),  # 8 subbands for 3D
+            nn.Linear(128, 7),  # 7 detail subbands (excluding LLL)
         )
         self.act = nn.Sigmoid()
 
     def forward(self, x: Tensor, temb: Tensor) -> Tensor:
-        # Compute gating values
+        # Compute gating values for detail subbands only
         p = self.pooling(x).squeeze(-1).squeeze(-1).squeeze(-1)
         c = torch.cat([p, temb], dim=1)
         gating_values = self.act(self.fnn(c))
 
-        # Apply DWT decomposition
+        # Apply DWT decomposition: returns (LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH)
         wavelet_subbands = self.dwt(x)
+        lll, *detail_subbands = wavelet_subbands  # Separate LLL from details
 
-        # Weight and sum subbands
-        scaled_subbands = [
+        # Weight only the detail subbands (7 of them)
+        weighted_details = [
             band * gating.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            for band, gating in zip(wavelet_subbands, torch.split(gating_values, 1, dim=1))
+            for band, gating in zip(detail_subbands, torch.split(gating_values, 1, dim=1))
         ]
-        return sum(scaled_subbands)
+
+        # Preserve LLL and add weighted details
+        return lll + sum(weighted_details)
 
 
 class WaveletGatingUpsample3D(nn.Module):
     """Wavelet-gated upsampling for 3D volumes.
 
-    Expands channels by 8x, applies learned gating, and uses IDWT
-    to reconstruct the upsampled volume.
+    Separates LLL (low-frequency approximation) from detail subbands.
+    LLL gets a dedicated convolution that passes through directly,
+    while detail subbands get a separate convolution with learned gating.
+    Detail conv is initialized to zero so the network starts by learning
+    simple upsampling before gradually adding high-frequency details.
     """
 
     def __init__(self, channels: int, temb_dim: int, wavelet: str = "haar"):
         super().__init__()
+        self.channels = channels
         self.idwt = IDWT_3D(wavelet)
         self.pooling = nn.AdaptiveAvgPool3d(1)
         self.fnn = nn.Sequential(
             nn.Linear(channels + temb_dim, 128),
             nn.SiLU(),
-            nn.Linear(128, 8),  # 8 subbands for 3D
+            nn.Linear(128, 7),  # 7 detail subbands (excluding LLL)
         )
         self.act = nn.Sigmoid()
-        self.conv_exp = nn.Conv3d(channels, channels * 8, kernel_size=1)
+
+        # Separate convolutions for LLL and detail subbands
+        self.conv_lll = nn.Conv3d(channels, channels, kernel_size=1)
+        self.conv_details = nn.Conv3d(channels, channels * 7, kernel_size=1)
+
+        # Initialize detail conv to zero - start with pure LLL upsampling
+        nn.init.zeros_(self.conv_details.weight)
+        nn.init.zeros_(self.conv_details.bias)
 
     def forward(self, x: Tensor, temb: Tensor) -> Tensor:
-        # Compute gating values
+        # Compute gating values for detail subbands only
         p = self.pooling(x).squeeze(-1).squeeze(-1).squeeze(-1)
         c = torch.cat([p, temb], dim=1)
         gating_values = self.act(self.fnn(c))
 
-        # Expand channels and split into subbands
-        wavelet_subbands = self.conv_exp(x).chunk(8, dim=1)
+        # Generate LLL subband (no gating - passes through directly)
+        lll = self.conv_lll(x)
 
-        # Weight subbands
-        scaled_subbands = [
+        # Generate and gate detail subbands
+        detail_subbands = self.conv_details(x).chunk(7, dim=1)
+        gated_details = [
             band * gating.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            for band, gating in zip(wavelet_subbands, torch.split(gating_values, 1, dim=1))
+            for band, gating in zip(detail_subbands, torch.split(gating_values, 1, dim=1))
         ]
 
-        # Apply IDWT reconstruction
-        return self.idwt(*scaled_subbands[:8])
+        # Apply IDWT reconstruction: (LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH)
+        return self.idwt(lll, *gated_details)
 
 
 class ResBlock(TimestepBlock):
