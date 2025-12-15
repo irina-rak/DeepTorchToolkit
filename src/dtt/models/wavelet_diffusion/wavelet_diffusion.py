@@ -89,7 +89,6 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 inference_timesteps: int (default: 50)
     """
     # Lazy imports
-    import copy
     import os
 
     import torch
@@ -467,8 +466,7 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Cache first batch for sample generation (avoids DDP deadlock)
             if batch_idx == 0:
                 self._cached_val_batch = {
-                    k: v.clone() if isinstance(v, torch.Tensor) else v
-                    for k, v in batch.items()
+                    k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in batch.items()
                 }
 
             images = batch["image"]
