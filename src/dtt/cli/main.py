@@ -51,44 +51,55 @@ def train(
 @_typer_app.command()
 def infer(
     config: Path = typer.Argument(..., help="Path to inference config YAML file"),
-    checkpoint: Path | None = typer.Option(None, "--checkpoint", "-ckpt", help="Override checkpoint path from config"),
-    output_dir: Path | None = typer.Option(None, "--output-dir", "-o", help="Override output directory"),
+    checkpoint: Path | None = typer.Option(
+        None, "--checkpoint", "-ckpt", help="Override checkpoint path from config"
+    ),
+    output_dir: Path | None = typer.Option(
+        None, "--output-dir", "-o", help="Override output directory"
+    ),
     batch_size: int | None = typer.Option(None, "--batch-size", "-b", help="Override batch size"),
-    num_batches: int | None = typer.Option(None, "--num-batches", "-n", help="Number of batches to process (for unconditional generation)"),
-    no_data: bool = typer.Option(False, "--no-data", help="Run without test data (unconditional generation from noise)"),
+    num_batches: int | None = typer.Option(
+        None,
+        "--num-batches",
+        "-n",
+        help="Number of batches to process (for unconditional generation)",
+    ),
+    no_data: bool = typer.Option(
+        False, "--no-data", help="Run without test data (unconditional generation from noise)"
+    ),
 ):
     """Run inference using a trained model checkpoint.
-    
+
     This command runs inference by calling the model's test_step method through
     the Lightning Trainer.test() API. The test_step implementation handles
     the inference logic, metrics computation, and output saving.
-    
+
     The checkpoint path is specified in the config file under 'checkpoint_path',
     but can be overridden with the --checkpoint flag.
-    
+
     Examples:
-    
+
         # Infer with config (checkpoint path in config)
         dtt infer configs/inference.yaml
-        
+
         # Override checkpoint path
         dtt infer configs/inference.yaml --checkpoint path/to/checkpoint.ckpt
-        
+
         # Unconditional generation without test data
         dtt infer configs/inference.yaml --no-data -n 10 -b 16
-        
+
         # Override output directory
         dtt infer configs/inference.yaml -o ./results
     """
     console = get_console()
-    
+
     # Load config
     if not config.exists():
         console.log(f"[bold red]Error:[/bold red] Config file not found: {config}")
         raise typer.Exit(code=1)
-    
+
     cfg_dict = read_yaml(config)
-    
+
     # Get checkpoint path: from flag override or config file
     if checkpoint is not None:
         checkpoint_path = checkpoint
@@ -100,42 +111,42 @@ def infer(
         console.log("[bold red]Error:[/bold red] No checkpoint specified!")
         console.log("Please specify 'checkpoint_path' in config or use --checkpoint flag")
         raise typer.Exit(code=1)
-    
+
     # Validate checkpoint exists
     if not checkpoint_path.exists():
         console.log(f"[bold red]Error:[/bold red] Checkpoint not found: {checkpoint_path}")
         raise typer.Exit(code=1)
-    
+
     # Apply CLI overrides
     if output_dir is not None:
         cfg_dict["output_dir"] = str(output_dir)
-    
+
     if batch_size is not None:
         if "data" not in cfg_dict:
             cfg_dict["data"] = {}
         cfg_dict["data"]["batch_size"] = batch_size
-    
+
     # Handle unconditional generation (no test data)
     if no_data:
         if "inference" not in cfg_dict:
             cfg_dict["inference"] = {}
         cfg_dict["inference"]["use_test_data"] = False
-        
+
         if num_batches is not None:
             cfg_dict["inference"]["num_batches"] = num_batches
-    
+
     if num_batches is not None and not no_data:
         # For test data mode, limit number of batches
         if "trainer" not in cfg_dict:
             cfg_dict["trainer"] = {}
         cfg_dict["trainer"]["limit_test_batches"] = num_batches
-    
+
     # Validate config
     cfg = Config.model_validate(cfg_dict)
-    
+
     # Set seed for reproducibility
     seed_everything(cfg.seed)
-    
+
     # Run inference
     console.log(f"[bold cyan]Checkpoint:[/bold cyan] {checkpoint_path}")
     run_inference(cfg.model_dump(), str(checkpoint_path))
