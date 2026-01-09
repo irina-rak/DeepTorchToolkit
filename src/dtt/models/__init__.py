@@ -9,3 +9,4 @@ from dtt.models.latent_diffusion import (
 )
 from dtt.models.unet import unet  # noqa: F401
 from dtt.models.wavelet_diffusion import wavelet_diffusion  # noqa: F401
+from dtt.models.wavelet_flow_matching import wavelet_flow_matching  # noqa: F401

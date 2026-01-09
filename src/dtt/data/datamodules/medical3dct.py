@@ -36,6 +36,7 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
 
     json_train = params.get("json_train")
     json_val = params.get("json_val")
+    json_test = params.get("json_test")  # Add test dataset support
     cache_rate = float(params.get("cache_rate", 0.0))
     synthetic = bool(params.get("synthetic", True))
     spatial_size = tuple(params.get("spatial_size", [256, 256, 256]))
@@ -67,12 +68,14 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
             super().__init__()
             self._train = None
             self._val = None
+            self._test = None
 
         def setup(self, stage: str | None = None) -> None:  # type: ignore[override]
             if synthetic or not json_train or not json_val:
                 # Fallback synthetic tiny dataset
                 self._train = _Synthetic3DDataset(length=32)
                 self._val = _Synthetic3DDataset(length=16)
+                self._test = _Synthetic3DDataset(length=16)
             else:
                 # JSON-based dataset using MONAI
                 from dtt.data.transforms.medical3dct import (
@@ -80,30 +83,43 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
                     get_val_transforms,
                 )
 
-                train_ds = JSONCacheDataset(
-                    data_dir=json_train,
-                    cache_rate=cache_rate,
-                    num_workers=num_workers,
-                    transforms=get_train_transforms(
-                        patch_size=spatial_size,
-                        pixdim=pixdim,
-                        margin=margin,
-                        random_patch=random_patch,
-                    ),
-                )
+                # Only load datasets needed for the current stage
+                if stage in (None, "fit"):
+                    train_ds = JSONCacheDataset(
+                        data_dir=json_train,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_train_transforms(
+                            patch_size=spatial_size,
+                            pixdim=pixdim,
+                            margin=margin,
+                            random_patch=random_patch,
+                        ),
+                    )
+                    self._train = _UnwrapDataset(train_ds)
 
-                val_ds = JSONCacheDataset(
-                    data_dir=json_val,
-                    cache_rate=cache_rate,
-                    num_workers=num_workers,
-                    transforms=get_val_transforms(
-                        patch_size=spatial_size, pixdim=pixdim, margin=margin
-                    ),
-                )
+                    val_ds = JSONCacheDataset(
+                        data_dir=json_val,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_val_transforms(
+                            patch_size=spatial_size, pixdim=pixdim, margin=margin
+                        ),
+                    )
+                    self._val = _UnwrapDataset(val_ds)
 
-                # Wrap datasets to handle list output from RandCropByPosNegLabeld
-                self._train = _UnwrapDataset(train_ds)
-                self._val = _UnwrapDataset(val_ds)
+                if stage in ("test", "predict"):
+                    # Use test dataset if provided, otherwise fall back to val
+                    test_json = json_test if json_test else json_val
+                    test_ds = JSONCacheDataset(
+                        data_dir=test_json,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_val_transforms(
+                            patch_size=spatial_size, pixdim=pixdim, margin=margin
+                        ),
+                    )
+                    self._test = _UnwrapDataset(test_ds)
 
         def train_dataloader(self):  # type: ignore[override]
             from torch.utils.data import DataLoader
@@ -114,5 +130,10 @@ def build_medical3dct_datamodule(cfg: dict[str, Any]):
             from torch.utils.data import DataLoader
 
             return DataLoader(self._val, batch_size=batch_size, num_workers=num_workers)
+
+        def test_dataloader(self):  # type: ignore[override]
+            from torch.utils.data import DataLoader
+
+            return DataLoader(self._test, batch_size=batch_size, num_workers=num_workers)
 
     return Medical3DCTDataModule()

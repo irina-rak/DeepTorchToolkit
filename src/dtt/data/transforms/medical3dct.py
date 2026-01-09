@@ -22,6 +22,7 @@ def get_train_transforms(
             RandFlipd,
             RandRotated,
             ScaleIntensityRanged,
+            ScaleIntensityRangePercentilesd,
             Spacingd,
             SpatialPadd,
         )
@@ -30,12 +31,14 @@ def get_train_transforms(
             LoadImaged(keys=["image", "label"]),
             EnsureChannelFirstd(keys=["image", "label"]),
             Orientationd(keys=["image", "label"], axcodes="RAS"),
-            Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear")),
             CropForegroundd(
                 keys=["image", "label"], source_key="image", margin=margin
             ),  # crop out black borders - be careful with this
-            ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0),
-            NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
+            Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear", "nearest")),
+            # ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+            # ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0, clip=True),
+            ScaleIntensityRanged(keys='image', a_min=-250, a_max=600, b_min=0, b_max=1, clip=True),
+            # NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=False),
         ]
 
         if random_patch:
@@ -45,7 +48,7 @@ def get_train_transforms(
                     label_key="label",
                     spatial_size=patch_size,
                     pos=1,
-                    neg=1,
+                    neg=0,
                     num_samples=1,
                     image_key="image",
                     image_threshold=0,
@@ -94,6 +97,7 @@ def get_val_transforms(
             NormalizeIntensityd,
             Orientationd,
             ScaleIntensityRanged,
+            ScaleIntensityRangePercentilesd,
             Spacingd,
             SpatialPadd,
         )
@@ -103,12 +107,13 @@ def get_val_transforms(
                 LoadImaged(keys=["image", "label"]),
                 EnsureChannelFirstd(keys=["image", "label"]),
                 Orientationd(keys=["image", "label"], axcodes="RAS"),
-                Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear")),
-                ScaleIntensityRanged(keys=["image"], a_min=0, a_max=255, b_min=0.0, b_max=1.0),
-                NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=True),
                 CropForegroundd(
                     keys=["image", "label"], source_key="image", margin=margin
                 ),  # crop out black borders - be careful with this
+                Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear", "nearest")),
+                ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+                # ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0, clip=True),
+                # NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=False),
                 # RandCropByPosNegLabeld(
                 #     keys=["image", "label"],
                 #     label_key="label",

@@ -38,6 +38,7 @@ class JSONCacheDataset:
             transform=self.transforms,
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,  # Set to 0 to prevent double worker spawning
+            copy_cache=False,
         )
 
     def __len__(self):
