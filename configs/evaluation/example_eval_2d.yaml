@@ -1,0 +1,41 @@
+# Evaluation configuration for 2D generated images
+#
+# Usage:
+#   dtt evaluate configs/evaluation/eval_2d.yaml
+#   dtt evaluate configs/evaluation/eval_2d.yaml --max-samples 500  # Override
+
+# Required: sources containing images
+# Supports BOTH directories and JSON files (DTT dataset format)
+# Examples:
+#   real_dir: outputs/real_samples                    # Directory with PNG/JPG files
+#   real_dir: path/to/json/file.json                  # JSON file with image paths
+real_dir: path/to/json/file.json
+fake_dir: path/to/generated_samples
+
+# Image dimensions: 2 for 2D images, 3 for 3D volumes
+spatial_dims: 2
+
+# Feature extractor: auto, inception, or medicalnet
+# - auto: Uses inception for 2D, medicalnet for 3D
+# - inception: InceptionV3 pretrained on ImageNet (2D only)
+# - medicalnet: 3D-ResNet pretrained on medical images (3D only)
+feature_extractor: auto
+
+# Maximum samples to load (null = load all)
+max_samples: null
+
+# Batch size for feature extraction
+batch_size: 32
+
+# Device for computation
+device: cuda
+
+# Whether to compute KID in addition to FID
+compute_kid: true
+
+# Path to save results as JSON (null = don't save)
+output_path: path/to/results.json
+
+# KID-specific parameters
+kid_num_subsets: 100
+kid_subset_size: 1000
