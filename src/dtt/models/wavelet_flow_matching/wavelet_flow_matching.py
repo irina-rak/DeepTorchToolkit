@@ -107,6 +107,8 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
     from dtt.models.wavelet_diffusion.wavelet_unet import WaveletDiffusionUNet
     from dtt.utils.logging import get_console
 
+    import torch.nn.functional as F
+
     console = get_console()
 
     class WaveletUNetWrapper(ModelWrapper):
@@ -116,7 +118,11 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
         - Converts flow_matching's interface: forward(x, t, **extras)
         - To WaveletDiffusionUNet's interface: forward(x, timesteps, context)
         - Rescales timesteps from [0, 1] to [0, max_timestep]
-        - Integrates DWT/IDWT operations
+        
+        IMPORTANT: This wrapper does NOT apply DWT/IDWT!
+        Flow matching operates entirely in wavelet space.
+        DWT should be applied to data before training/inference,
+        and IDWT should be applied after generation.
         """
 
         def __init__(
@@ -172,22 +178,25 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             """Forward pass with interface adaptation and timestep rescaling.
 
             Args:
-                x: Input tensor (batch_size, channels, *spatial_dims)
+                x: Input tensor IN WAVELET SPACE (batch_size, channels, *spatial_dims)
                 t: Timesteps in [0, 1] (batch_size,)
                 **extras: Additional arguments (context, etc.)
 
             Returns:
-                Model output (same shape as x)
+                Model output IN WAVELET SPACE (same shape as x)
+            
+            IMPORTANT: DWT/IDWT should NOT be applied here!
+            The flow matching operates entirely in wavelet space.
+            DWT is applied before calling the solver, IDWT after generation.
             """
-            # Apply DWT to input
-            x_wavelet = self._apply_dwt(x)
-
-            # Rescale t from [0, 1] to [0, max_timestep]
-            t_scaled = t * self.max_timestep
+            # Rescale t from [0, 1] to [0, max_timestep - 1] and convert to discrete timesteps
+            # This matches MOTFM reference implementation and works properly with sinusoidal embeddings
+            t_scaled = t * (self.max_timestep - 1)
+            t_scaled = t_scaled.floor().long()
 
             # Ensure timesteps is 1D
             if t_scaled.dim() == 0:
-                batch_size = x_wavelet.shape[0]
+                batch_size = x.shape[0]
                 t_scaled = t_scaled.expand(batch_size)
             elif t_scaled.dim() > 1:
                 t_scaled = t_scaled.flatten()
@@ -195,13 +204,128 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             # Extract conditioning if provided
             context = extras.get("context") or extras.get("cond")
 
-            # Call WaveletDiffusionUNet
-            output = self.model(x=x_wavelet, timesteps=t_scaled, y=context)
-
-            # Apply IDWT to output
-            output = self._apply_idwt(output)
+            # Call WaveletDiffusionUNet (operates in wavelet space)
+            output = self.model(x=x, timesteps=t_scaled, y=context)
 
             return output
+
+    class SubbandNormalizer(torch.nn.Module):
+        """Normalizes wavelet subbands to have balanced energy.
+
+        The problem: In wavelet decomposition of natural images, the LLL
+        (low-frequency) subband contains ~95-99% of the total energy, while
+        the 7 detail subbands contain only ~1-5%. When uniform Gaussian noise
+        is used as the source distribution, the detail subbands
+        become noise-dominated (SNR << 0 dB), making it impossible for the model
+        to learn them.
+
+        The solution: Normalize each subband independently to have unit variance
+        before flow matching, then denormalize after generation.
+        This ensures all subbands have equal signal-to-noise ratio during training.
+
+        Args:
+            num_subbands: Number of wavelet subbands (4 for 2D, 8 for 3D)
+            momentum: Momentum for running statistics update (like BatchNorm)
+            eps: Small constant for numerical stability
+        """
+
+        def __init__(
+            self,
+            num_subbands: int = 8,
+            momentum: float = 0.1,
+            eps: float = 1e-6,
+        ):
+            super().__init__()
+            self.num_subbands = num_subbands
+            self.momentum = momentum
+            self.eps = eps
+
+            # Running statistics (like BatchNorm)
+            # These track the mean and std of each subband across training
+            self.register_buffer("running_mean", torch.zeros(num_subbands))
+            self.register_buffer("running_std", torch.ones(num_subbands))
+            self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
+            # Flag to control whether to update running stats
+            self.track_running_stats = True
+
+        def normalize(self, x: torch.Tensor, update_stats: bool = True) -> torch.Tensor:
+            """Normalize stacked subbands to have zero mean and unit variance.
+
+            Args:
+                x: Stacked subbands tensor of shape (B, num_subbands*C, *spatial)
+                   where C is the number of input channels (typically 1)
+                update_stats: Whether to update running statistics
+
+            Returns:
+                Normalized tensor with same shape
+            """
+            B = x.shape[0]
+            channels_per_subband = x.shape[1] // self.num_subbands
+            spatial_dims = x.shape[2:]
+
+            # Reshape to (B, num_subbands, C, *spatial) for per-subband stats
+            x_reshaped = x.view(B, self.num_subbands, channels_per_subband, *spatial_dims)
+
+            if self.training and update_stats and self.track_running_stats:
+                # Compute batch statistics (mean and std per subband)
+                # Reduce over batch, channel, and spatial dimensions
+                with torch.no_grad():
+                    batch_mean = x_reshaped.mean(dim=(0, 2, *range(3, 3 + len(spatial_dims))))
+                    batch_var = x_reshaped.var(dim=(0, 2, *range(3, 3 + len(spatial_dims))), unbiased=False)
+                    batch_std = torch.sqrt(batch_var + self.eps)
+
+                    # Update running stats with exponential moving average
+                    self.running_mean = (
+                        (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
+                    )
+                    self.running_std = (
+                        (1 - self.momentum) * self.running_std + self.momentum * batch_std
+                    )
+                    self.num_batches_tracked += 1
+
+            # Use running stats for normalization (both training and inference)
+            # This ensures consistent normalization between train/val/test
+            mean = self.running_mean.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+            std = self.running_std.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+
+            x_normalized = (x_reshaped - mean) / (std + self.eps)
+
+            # Reshape back to (B, num_subbands*C, *spatial)
+            return x_normalized.view(B, -1, *spatial_dims)
+
+        def denormalize(self, x: torch.Tensor) -> torch.Tensor:
+            """Denormalize subbands back to original scale.
+
+            Args:
+                x: Normalized stacked subbands tensor
+
+            Returns:
+                Denormalized tensor with original scale
+            """
+            B = x.shape[0]
+            channels_per_subband = x.shape[1] // self.num_subbands
+            spatial_dims = x.shape[2:]
+
+            # Reshape to (B, num_subbands, C, *spatial)
+            x_reshaped = x.view(B, self.num_subbands, channels_per_subband, *spatial_dims)
+
+            # Apply inverse normalization using running stats
+            mean = self.running_mean.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+            std = self.running_std.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+
+            x_denormalized = x_reshaped * (std + self.eps) + mean
+
+            # Reshape back to (B, num_subbands*C, *spatial)
+            return x_denormalized.view(B, -1, *spatial_dims)
+
+        def get_stats(self) -> dict:
+            """Get current running statistics for debugging."""
+            return {
+                "running_mean": self.running_mean.cpu().numpy(),
+                "running_std": self.running_std.cpu().numpy(),
+                "num_batches_tracked": self.num_batches_tracked.item(),
+            }
 
     class LitWaveletFlowMatching(LightningModule):
         """Lightning module for Wavelet Flow Matching."""
@@ -257,9 +381,44 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 else:
                     self.dwt = DWT_3D(self.wavelet)
                     self.idwt = IDWT_3D(self.wavelet)
+
+                # Subband normalization to balance energy across subbands
+                # This is critical for proper training:
+                # - LLL subband typically contains 95-99% of energy
+                # - Detail subbands become noise-dominated without normalization
+                self.normalize_subbands = p.get("normalize_subbands", True)
+                if self.normalize_subbands:
+                    num_subbands = 4 if self.spatial_dims == 2 else 8
+                    self.subband_normalizer = SubbandNormalizer(
+                        num_subbands=num_subbands,
+                        momentum=p.get("subband_norm_momentum", 0.1),
+                        eps=1e-6,
+                    )
+                else:
+                    self.subband_normalizer = None
+
+                # Per-subband loss weighting to emphasize high-frequency details
+                # Order for 3D: [LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH]
+                # Order for 2D: [LL, LH, HL, HH]
+                num_subbands = 4 if self.spatial_dims == 2 else 8
+                default_weights_3d = [1.0, 2.0, 2.0, 3.0, 2.0, 3.0, 3.0, 4.0]
+                default_weights_2d = [1.0, 2.0, 2.0, 4.0]
+                default_weights = default_weights_2d if self.spatial_dims == 2 else default_weights_3d
+
+                subband_loss_weights = p.get("subband_loss_weights", default_weights)
+                if subband_loss_weights is not None:
+                    self.subband_loss_weights = torch.tensor(subband_loss_weights, dtype=torch.float32)
+                    # Normalize weights so they sum to num_subbands
+                    self.subband_loss_weights = self.subband_loss_weights * (num_subbands / self.subband_loss_weights.sum())
+                    console.log(f"  - Subband loss weights: {self.subband_loss_weights.tolist()}")
+                else:
+                    self.subband_loss_weights = None
             else:
                 self.dwt = None
                 self.idwt = None
+                self.normalize_subbands = False
+                self.subband_normalizer = None
+                self.subband_loss_weights = None
 
             # Wrap UNet for flow matching
             max_timestep = p.get("max_timestep", 1000)
@@ -301,12 +460,13 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             # Note: EMA is handled by EMACallback (configured in callbacks.ema)
             # The callback will set self.ema_model at training start if enabled
 
-            self.save_hyperparameters(ignore=["model", "dwt", "idwt"])
+            self.save_hyperparameters(ignore=["model", "dwt", "idwt", "subband_normalizer"])
 
             console.log("[bold green]Wavelet Flow Matching initialized:[/bold green]")
             console.log(f"  - Spatial dims: {self.spatial_dims}")
             console.log(f"  - Wavelet: {self.wavelet}")
             console.log(f"  - Apply wavelet transform: {self.apply_wavelet_transform}")
+            console.log(f"  - Normalize subbands: {self.normalize_subbands}")
             console.log(f"  - Solver: {self.solver_args.get('method', 'midpoint')}")
 
         def _get_inference_model(self):
@@ -314,10 +474,16 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             The EMA model is set by EMACallback during on_fit_start if callbacks.ema
             is configured.
+            
+            IMPORTANT: We return ema_model.module (not ema_model itself) because:
+            - AveragedModel.forward() has a different signature than the wrapped model
+            - The .module attribute contains the averaged weights with the original forward()
             """
             ema = getattr(self, "ema_model", None)
             if ema is not None:
-                return ema
+                # Return the underlying module with averaged weights
+                # AveragedModel.module has the same forward() signature as the original
+                return ema.module
             return self.model
 
         def _normalize_data(self, x: torch.Tensor) -> torch.Tensor:
@@ -339,6 +505,39 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 return x
             else:
                 raise ValueError(f"Unknown data_range: {self.data_range}")
+        
+        def _apply_dwt(self, x: torch.Tensor, update_stats: bool = True) -> torch.Tensor:
+            """Apply discrete wavelet transform and stack subbands.
+            
+            Args:
+                x: Input tensor [B, C, ...]
+                update_stats: Whether to update normalizer running stats (False for validation)
+            """
+            if not self.apply_wavelet_transform:
+                return x
+
+            subbands = self.dwt(x)
+            # Stack subbands along channel dimension
+            stacked = torch.cat(subbands, dim=1)
+
+            # Apply subband normalization if enabled
+            if self.subband_normalizer is not None:
+                stacked = self.subband_normalizer.normalize(stacked, update_stats=update_stats)
+
+            return stacked
+
+        def _apply_idwt(self, x: torch.Tensor) -> torch.Tensor:
+            """Split stacked subbands and apply inverse wavelet transform."""
+            if not self.apply_wavelet_transform:
+                return x
+
+            # Denormalize before IDWT if normalization is enabled
+            if self.subband_normalizer is not None:
+                x = self.subband_normalizer.denormalize(x)
+
+            num_subbands = 4 if self.spatial_dims == 2 else 8
+            subbands = torch.chunk(x, num_subbands, dim=1)
+            return self.idwt(*subbands)
 
         def forward(self, x: torch.Tensor, t: torch.Tensor, **extras) -> torch.Tensor:
             return self.model(x=x, t=t, **extras)
@@ -351,6 +550,12 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             # Normalize data to specified range
             images = self._normalize_data(images)
+            
+            # Apply DWT to move to wavelet space
+            if self.apply_wavelet_transform:
+                images_wavelet = self._apply_dwt(images)
+            else:
+                images_wavelet = images
 
             # Get optimizer
             opt = self.optimizers()
@@ -361,20 +566,31 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 (batch_idx + 1) % self.manual_accumulate_grad_batches == 0
             ) or is_last_batch
 
-            # Zero gradients if we're about to step
-            if should_step_optimizer:
-                opt.zero_grad(set_to_none=True)
-
-            # Sample noise and time
-            source_dist = torch.randn_like(images)
+            # Sample noise and time IN WAVELET SPACE
+            source_dist = torch.randn_like(images_wavelet)
             t = torch.rand(images.shape[0], device=self.device)
-            sample_info = self.path.sample(t=t, x_0=source_dist, x_1=images)
+            sample_info = self.path.sample(t=t, x_0=source_dist, x_1=images_wavelet)
 
-            # Predict velocity
+            # Predict velocity IN WAVELET SPACE
             velocity_pred = self.forward(x=sample_info.x_t, t=sample_info.t)
 
-            # Compute loss
-            loss = self.mse_loss(velocity_pred, sample_info.dx_t)
+            # Compute loss - use per-subband weighting if enabled
+            if self.subband_loss_weights is not None and self.apply_wavelet_transform:
+                # Compute weighted per-subband MSE loss on velocity
+                num_subbands = 4 if self.spatial_dims == 2 else 8
+                weights = self.subband_loss_weights.to(self.device)
+
+                loss = 0.0
+                for i in range(num_subbands):
+                    subband_pred = velocity_pred[:, i : i + 1]
+                    subband_target = sample_info.dx_t[:, i : i + 1]
+                    subband_mse = F.mse_loss(subband_pred, subband_target)
+                    loss = loss + weights[i] * subband_mse
+
+                # Average across subbands (weights already normalized to sum to num_subbands)
+                loss = loss / num_subbands
+            else:
+                loss = self.mse_loss(velocity_pred, sample_info.dx_t)
 
             # Additional monitoring metrics
             if self._logging:
@@ -415,6 +631,35 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 self.log("train/loss_mid_t", mid_loss, prog_bar=False, sync_dist=True)
                 self.log("train/loss_late_t", late_loss, prog_bar=False, sync_dist=True)
 
+                # Log per-subband loss periodically (every 50 batches)
+                if batch_idx % 50 == 0 and self.apply_wavelet_transform:
+                    num_subbands = 4 if self.spatial_dims == 2 else 8
+                    subband_names = (
+                        ["LL", "LH", "HL", "HH"]
+                        if num_subbands == 4
+                        else ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
+                    )
+                    for i, name in enumerate(subband_names):
+                        subband_pred = velocity_pred[:, i : i + 1]
+                        subband_target = sample_info.dx_t[:, i : i + 1]
+                        subband_loss = F.mse_loss(subband_pred, subband_target)
+                        self.log(
+                            f"train/subband_loss/{name}",
+                            subband_loss,
+                            prog_bar=False,
+                            sync_dist=True,
+                        )
+
+                    # Also log subband normalizer stats if enabled
+                    if self.subband_normalizer is not None:
+                        for i, name in enumerate(subband_names):
+                            self.log(
+                                f"subband_std/{name}",
+                                self.subband_normalizer.running_std[i],
+                                prog_bar=False,
+                                sync_dist=True,
+                            )
+
             # Scale loss for gradient accumulation
             loss = loss / self.manual_accumulate_grad_batches
 
@@ -424,6 +669,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             # Step optimizer if accumulated enough gradients
             if should_step_optimizer:
                 opt.step()
+                opt.zero_grad(set_to_none=True)  # Zero gradients AFTER stepping
                 # Note: EMA update is handled by EMACallback.on_train_batch_end()
 
             if self._logging:
@@ -451,10 +697,16 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             # Normalize data to specified range
             images = self._normalize_data(images)
+            
+            # Apply DWT to move to wavelet space (don't update normalizer stats during validation)
+            if self.apply_wavelet_transform:
+                images_wavelet = self._apply_dwt(images, update_stats=False)
+            else:
+                images_wavelet = images
 
-            source_dist = torch.randn_like(images)
+            source_dist = torch.randn_like(images_wavelet)
             t = torch.rand(images.shape[0], device=self.device)
-            sample_info = self.path.sample(t=t, x_0=source_dist, x_1=images)
+            sample_info = self.path.sample(t=t, x_0=source_dist, x_1=images_wavelet)
 
             # Use EMA model for validation if available
             model_to_use = self._get_inference_model()
@@ -464,6 +716,25 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             if self._logging:
                 self.log("val/loss", loss, prog_bar=True, sync_dist=True)
+
+                # Log per-subband validation loss
+                if self.apply_wavelet_transform:
+                    num_subbands = 4 if self.spatial_dims == 2 else 8
+                    subband_names = (
+                        ["LL", "LH", "HL", "HH"]
+                        if num_subbands == 4
+                        else ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
+                    )
+                    for i, name in enumerate(subband_names):
+                        subband_pred = velocity_pred[:, i : i + 1]
+                        subband_target = sample_info.dx_t[:, i : i + 1]
+                        subband_loss = F.mse_loss(subband_pred, subband_target)
+                        self.log(
+                            f"val/subband_loss/{name}",
+                            subband_loss,
+                            prog_bar=False,
+                            sync_dist=True,
+                        )
 
             return {"loss": loss}
 
@@ -518,9 +789,17 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             with torch.no_grad():
                 imgs_original = self._cached_val_batch["image"].to(self.device)
                 imgs = self._normalize_data(imgs_original)
-                x_init = torch.randn_like(imgs)
+                
+                # Apply DWT to get wavelet space representation
+                if self.apply_wavelet_transform:
+                    imgs_wavelet = self._apply_dwt(imgs)
+                else:
+                    imgs_wavelet = imgs
+                
+                # Start from random noise IN WAVELET SPACE
+                x_init = torch.randn_like(imgs_wavelet)
 
-                # Generate samples with fewer time points for validation
+                # Generate samples IN WAVELET SPACE
                 time_grid = torch.linspace(0, 1, time_points, device=self.device)
                 sol = solver.sample(
                     time_grid=time_grid,
@@ -530,7 +809,13 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                     return_intermediates=False,
                 )
 
-                final_imgs = sol
+                final_imgs_wavelet = sol
+                
+                # Apply IDWT to convert back to image space
+                if self.apply_wavelet_transform:
+                    final_imgs = self._apply_idwt(final_imgs_wavelet)
+                else:
+                    final_imgs = final_imgs_wavelet
 
                 # Denormalize generated images back to [0, 1] for metrics
                 final_imgs_denorm = self._denormalize_data(final_imgs)
@@ -648,17 +933,33 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
         def test_step(
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
-            """Test step: Generate samples and optionally compute metrics."""
-            batch_size = batch["image"].shape[0]
+            """Test step: Generate samples and optionally compute metrics.
+            
+            Supports two modes:
+            - Conditional (default): Uses test data, computes PSNR/SSIM, saves comparisons
+            - Unconditional: Generates from noise only, no metrics, no comparisons
+            
+            Mode is determined by self.inference_mode set by the inference runner.
+            """
             device = self.device
-
+            is_unconditional = getattr(self, "inference_mode", "conditional") == "unconditional"
+            save_comparison = getattr(self, "inference_save_comparison", True) and not is_unconditional
+            
+            # Get batch data
             imgs_original = batch["image"].to(device)
+            batch_size = imgs_original.shape[0]
 
             # Normalize images to model's expected range
             imgs_normalized = self._normalize_data(imgs_original)
+            
+            # Apply DWT to get wavelet space representation
+            if self.apply_wavelet_transform:
+                imgs_wavelet = self._apply_dwt(imgs_normalized)
+            else:
+                imgs_wavelet = imgs_normalized
 
-            # Generate samples from random noise
-            x_init = torch.randn_like(imgs_normalized)
+            # Generate samples from random noise IN WAVELET SPACE
+            x_init = torch.randn_like(imgs_wavelet)
 
             # Solver configuration
             time_points = self.solver_args.get("time_points", 20)
@@ -668,44 +969,75 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             model_to_use = self._get_inference_model()
             model_to_use.eval()
 
-            # Create ODE solver and generate samples
+            # Create ODE solver and generate samples IN WAVELET SPACE
             solver = ODESolver(velocity_model=model_to_use)
             time_grid = torch.linspace(0, 1, time_points, device=device)
 
             with torch.no_grad():
-                generated_samples = solver.sample(
+                generated_wavelet = solver.sample(
                     time_grid=time_grid,
                     step_size=None,
                     x_init=x_init,
                     method=method,
                     return_intermediates=False,
                 )
+            
+            # Apply IDWT to convert back to image space
+            if self.apply_wavelet_transform:
+                generated_samples = self._apply_idwt(generated_wavelet)
+            else:
+                generated_samples = generated_wavelet
 
             # Denormalize generated samples back to [0, 1] range
             generated_samples = self._denormalize_data(generated_samples)
             generated_samples = torch.clamp(generated_samples, 0.0, 1.0)
 
-            # Compute metrics
-            psnr = self.psnr_metric(generated_samples, imgs_original).mean()
-            ssim = self.ssim_metric(generated_samples, imgs_original).mean()
+            # Compute metrics only for conditional mode (when we have real images to compare)
+            metrics = {}
+            if not is_unconditional:
+                psnr = self.psnr_metric(generated_samples, imgs_original).mean()
+                ssim = self.ssim_metric(generated_samples, imgs_original).mean()
 
-            metrics = {
-                "psnr": psnr.item() if isinstance(psnr, torch.Tensor) else psnr,
-                "ssim": ssim.item() if isinstance(ssim, torch.Tensor) else ssim,
-            }
+                metrics = {
+                    "psnr": psnr.item() if isinstance(psnr, torch.Tensor) else psnr,
+                    "ssim": ssim.item() if isinstance(ssim, torch.Tensor) else ssim,
+                }
 
-            if self._logging:
-                self.log("test/psnr", metrics["psnr"], sync_dist=True)
-                self.log("test/ssim", metrics["ssim"], sync_dist=True)
+                if self._logging:
+                    self.log("test/psnr", metrics["psnr"], sync_dist=True)
+                    self.log("test/ssim", metrics["ssim"], sync_dist=True)
 
             # Save generated samples if output directory is set
             if hasattr(self, "inference_output_dir"):
-                self._save_samples(generated_samples, batch_idx)
+                self._save_samples(
+                    generated_samples, 
+                    batch_idx,
+                    originals=imgs_original if save_comparison else None,
+                    save_comparison=save_comparison,
+                )
 
             return metrics
 
-        def _save_samples(self, samples: torch.Tensor, batch_idx: int):
-            """Save generated samples to disk."""
+        def _save_samples(
+            self, 
+            samples: torch.Tensor, 
+            batch_idx: int,
+            originals: torch.Tensor | None = None,
+            save_comparison: bool = True,
+        ):
+            """Save generated samples to disk.
+            
+            Args:
+                samples: Generated samples tensor [B, C, ...]
+                batch_idx: Current batch index
+                originals: Original images for comparison (optional)
+                save_comparison: Whether to save side-by-side comparison images
+            """
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
             output_dir = getattr(self, "inference_output_dir", None)
             if output_dir is None:
                 return
@@ -715,8 +1047,47 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             for i in range(samples.shape[0]):
                 sample = samples[i].cpu()
-                sample_path = os.path.join(samples_dir, f"sample_batch{batch_idx}_idx{i}.pt")
-                torch.save(sample, sample_path)
+                sample_idx = batch_idx * samples.shape[0] + i
+                
+                # Save as PNG image at native resolution
+                img = sample.squeeze()
+                if img.dim() == 3:  # 3D volume - take center slice
+                    center = img.shape[0] // 2
+                    img = img[center]
+                
+                # Normalize to [0, 255] for saving
+                img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                img = np.rot90(img.numpy(), k=-1)
+                img_uint8 = (img * 255).astype(np.uint8)
+                
+                # Save using PIL at native resolution
+                from PIL import Image
+                png_path = os.path.join(samples_dir, f"sample_{sample_idx:05d}.png")
+                Image.fromarray(img_uint8, mode='L').save(png_path)
+                
+                # Save comparison if requested and originals provided
+                if save_comparison and originals is not None:
+                    orig = originals[i].cpu().squeeze()
+                    if orig.dim() == 3:  # 3D
+                        center = orig.shape[0] // 2
+                        orig = orig[center]
+                    
+                    orig = (orig - orig.min()) / (orig.max() - orig.min() + 1e-8)
+                    orig = np.rot90(orig.numpy(), k=-1)
+                    
+                    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+                    axes[0].imshow(orig, cmap="gray")
+                    axes[0].set_title("Original")
+                    axes[0].axis("off")
+                    
+                    axes[1].imshow(img, cmap="gray")
+                    axes[1].set_title("Generated")
+                    axes[1].axis("off")
+                    
+                    plt.tight_layout()
+                    comparison_path = os.path.join(samples_dir, f"comparison_{sample_idx:05d}.png")
+                    plt.savefig(comparison_path, bbox_inches="tight", dpi=150)
+                    plt.close()
 
         def configure_optimizers(self):
             """Configure optimizer and scheduler."""
