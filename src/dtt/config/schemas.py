@@ -100,12 +100,42 @@ class InferenceConfig(BaseModel):
     num_batches: int = 10  # Number of batches for unconditional generation
 
 
+class EvaluationConfig(BaseModel):
+    """Configuration for evaluation of generated images.
+
+    This config is used by the `dtt evaluate` command to compute
+    distribution-based metrics (FID/KID) between real and generated images.
+    """
+
+    real_dir: str  # Directory or JSON file containing real images
+    fake_dir: str  # Directory or JSON file containing generated/fake images
+    spatial_dims: int = 2  # 2 for images, 3 for volumes
+    feature_extractor: str = "auto"  # auto, inception, medicalnet
+    max_samples: int | None = None  # Maximum samples to load (None = all)
+    batch_size: int = 32  # Batch size for feature extraction
+    device: str = "cuda"  # Device for computation
+    compute_kid: bool = True  # Whether to compute KID in addition to FID
+    output_path: str | None = None  # Path to save results as JSON
+
+    # Image resizing
+    target_size: list[int] | None = None  # Target size to resize all images (e.g., [128, 128])
+
+    # KID-specific parameters
+    kid_num_subsets: int = 100  # Number of subsets for KID computation
+    kid_subset_size: int = 1000  # Size of each subset
+
+    # MedicalNet-specific (for 3D)
+    medicalnet_depth: int = 50  # ResNet depth: 10, 18, 34, or 50
+
+
 class Config(BaseModel):
     seed: int = 42
     save_dir: str = "experiments"  # Base directory for all training outputs
+    ckpt_path: str | None = None  # Path to checkpoint for resuming training
     trainer: TrainerConfig = Field(default_factory=TrainerConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logger: LoggerConfig = Field(default_factory=LoggerConfig)
     callbacks: CallbacksConfig = Field(default_factory=CallbacksConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)  # For inference configs
+    evaluation: EvaluationConfig | None = None  # For evaluation configs
