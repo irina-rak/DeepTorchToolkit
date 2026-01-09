@@ -45,10 +45,13 @@ class EMACallback(Callback):
         model = getattr(pl_module, "model", pl_module)
 
         # Create EMA model with efficient multi_avg_fn
+        # Critical: use_buffers=True ensures BatchNorm running stats are updated/copied
+        # Without this, BN stats stay at random init, causing garbage output
         self.ema_model = AveragedModel(
             model,
             multi_avg_fn=get_ema_multi_avg_fn(self.decay),
             device=pl_module.device,
+            use_buffers=True,
         )
 
         # Expose EMA model to LightningModule for inference

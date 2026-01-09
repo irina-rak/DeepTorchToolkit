@@ -92,6 +92,7 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
     import os
 
     import torch
+    import torch.nn as nn
     import torch.nn.functional as F
     from lightning.pytorch import LightningModule
     from monai.metrics import PSNRMetric, SSIMMetric
@@ -118,9 +119,16 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             beta_start: float = 0.0001,
             beta_end: float = 0.02,
             beta_schedule: str = "linear",
+            prediction_type: str = "epsilon",
             device: torch.device = None,
         ):
+            """Initialize DDPM scheduler.
+
+            Args:
+                prediction_type: 'epsilon' (predict noise) or 'x_start' (predict x0)
+            """
             self.num_train_timesteps = num_train_timesteps
+            self.prediction_type = prediction_type
             self.device = device or torch.device("cpu")
 
             # Compute beta schedule
@@ -220,11 +228,16 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             """Perform one step of the reverse diffusion process."""
             t = timestep
 
-            # Predict x_0 from noise prediction
-            pred_original_sample = (
-                self.sqrt_recip_alphas_cumprod[t] * sample
-                - self.sqrt_recipm1_alphas_cumprod[t] * model_output
-            )
+            # Get x_0 prediction based on prediction_type
+            if self.prediction_type == "x_start":
+                # Model directly predicts x_0
+                pred_original_sample = model_output
+            else:
+                # Model predicts noise (epsilon), convert to x_0
+                pred_original_sample = (
+                    self.sqrt_recip_alphas_cumprod[t] * sample
+                    - self.sqrt_recipm1_alphas_cumprod[t] * model_output
+                )
 
             # NOTE: No clamping here - wavelet coefficients can exceed [-1,1]
             # Clamping is only valid for pixel-space diffusion
@@ -252,6 +265,125 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 prev_sample = posterior_mean
 
             return prev_sample
+
+    class SubbandNormalizer(nn.Module):
+        """Normalizes wavelet subbands to have balanced energy.
+
+        The problem: In wavelet decomposition of natural images, the LLL
+        (low-frequency) subband contains ~95-99% of the total energy, while
+        the 7 detail subbands contain only ~1-5%. When uniform Gaussian noise
+        is added during diffusion, the detail subbands become noise-dominated
+        (SNR << 0 dB), making it impossible for the model to learn them.
+
+        The solution: Normalize each subband independently to have unit variance
+        before the diffusion process, then denormalize after reconstruction.
+        This ensures all subbands have equal signal-to-noise ratio during training.
+
+        Args:
+            num_subbands: Number of wavelet subbands (4 for 2D, 8 for 3D)
+            momentum: Momentum for running statistics update (like BatchNorm)
+            eps: Small constant for numerical stability
+        """
+
+        def __init__(
+            self,
+            num_subbands: int = 8,
+            momentum: float = 0.1,
+            eps: float = 1e-6,
+        ):
+            super().__init__()
+            self.num_subbands = num_subbands
+            self.momentum = momentum
+            self.eps = eps
+
+            # Running statistics (like BatchNorm)
+            # These track the mean and std of each subband across training
+            self.register_buffer("running_mean", torch.zeros(num_subbands))
+            self.register_buffer("running_std", torch.ones(num_subbands))
+            self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
+            # Flag to control whether to update running stats
+            self.track_running_stats = True
+
+        def normalize(self, x: torch.Tensor, update_stats: bool = True) -> torch.Tensor:
+            """Normalize stacked subbands to have zero mean and unit variance.
+
+            Args:
+                x: Stacked subbands tensor of shape (B, num_subbands*C, *spatial)
+                   where C is the number of input channels (typically 1)
+                update_stats: Whether to update running statistics
+
+            Returns:
+                Normalized tensor with same shape
+            """
+            batch_size = x.shape[0]
+            channels_per_subband = x.shape[1] // self.num_subbands
+            spatial_dims = x.shape[2:]
+
+            # Reshape to (B, num_subbands, C, *spatial) for per-subband stats
+            x_reshaped = x.view(batch_size, self.num_subbands, channels_per_subband, *spatial_dims)
+
+            if self.training and update_stats and self.track_running_stats:
+                # Compute batch statistics (mean and std per subband)
+                # Reduce over batch, channel, and spatial dimensions
+                with torch.no_grad():
+                    batch_mean = x_reshaped.mean(dim=(0, 2, *range(3, 3 + len(spatial_dims))))
+                    batch_var = x_reshaped.var(
+                        dim=(0, 2, *range(3, 3 + len(spatial_dims))), unbiased=False
+                    )
+                    batch_std = torch.sqrt(batch_var + self.eps)
+
+                    # Update running stats with exponential moving average
+                    self.running_mean = (
+                        1 - self.momentum
+                    ) * self.running_mean + self.momentum * batch_mean
+                    self.running_std = (
+                        1 - self.momentum
+                    ) * self.running_std + self.momentum * batch_std
+                    self.num_batches_tracked += 1
+
+            # Use running stats for normalization (both training and inference)
+            # This ensures consistent normalization between train/val/test
+            mean = self.running_mean.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+            std = self.running_std.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+
+            x_normalized = (x_reshaped - mean) / (std + self.eps)
+
+            # Reshape back to (B, num_subbands*C, *spatial)
+            return x_normalized.view(batch_size, -1, *spatial_dims)
+
+        def denormalize(self, x: torch.Tensor) -> torch.Tensor:
+            """Denormalize subbands back to original scale.
+
+            Args:
+                x: Normalized stacked subbands tensor
+
+            Returns:
+                Denormalized tensor with original scale
+            """
+            batch_size = x.shape[0]
+            channels_per_subband = x.shape[1] // self.num_subbands
+            spatial_dims = x.shape[2:]
+
+            # Reshape to (B, num_subbands, C, *spatial)
+            x_reshaped = x.view(batch_size, self.num_subbands, channels_per_subband, *spatial_dims)
+
+            # Apply inverse normalization using running stats
+            mean = self.running_mean.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+            std = self.running_std.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
+
+            x_denormalized = x_reshaped * (std + self.eps) + mean
+
+            # Reshape back to (B, num_subbands*C, *spatial)
+            return x_denormalized.view(batch_size, -1, *spatial_dims)
+
+        def get_stats(self) -> dict:
+            """Get current running statistics for debugging."""
+            return {
+                "running_mean": self.running_mean.cpu().numpy(),
+                "running_std": self.running_std.cpu().numpy(),
+                "num_batches_tracked": self.num_batches_tracked.item(),
+            }
 
     class LitWaveletDiffusion(LightningModule):
         """Lightning module for Wavelet Diffusion."""
@@ -308,13 +440,66 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                     self.dwt = DWT_3D(self.wavelet)
                     self.idwt = IDWT_3D(self.wavelet)
 
+                # Subband normalization to balance energy across subbands
+                # This is critical for proper diffusion training:
+                # - LLL subband typically contains 95-99% of energy
+                # - Detail subbands become noise-dominated without normalization
+                self.normalize_subbands = p.get("normalize_subbands", True)
+                if self.normalize_subbands:
+                    num_subbands = 4 if self.spatial_dims == 2 else 8
+                    self.subband_normalizer = SubbandNormalizer(
+                        num_subbands=num_subbands,
+                        momentum=p.get("subband_norm_momentum", 0.1),
+                        eps=1e-6,
+                    )
+                else:
+                    self.subband_normalizer = None
+
+                # Per-subband loss weighting to emphasize high-frequency details
+                # Default weights: higher weight for high-frequency subbands
+                # Order for 3D: [LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH]
+                # Order for 2D: [LL, LH, HL, HH]
+                default_weights_3d = [
+                    1.0,
+                    2.0,
+                    2.0,
+                    3.0,
+                    2.0,
+                    3.0,
+                    3.0,
+                    4.0,
+                ]  # Emphasize detail subbands
+                default_weights_2d = [1.0, 2.0, 2.0, 4.0]
+                default_weights = (
+                    default_weights_2d if self.spatial_dims == 2 else default_weights_3d
+                )
+
+                subband_loss_weights = p.get("subband_loss_weights", default_weights)
+                if subband_loss_weights is not None:
+                    self.subband_loss_weights = torch.tensor(
+                        subband_loss_weights, dtype=torch.float32
+                    )
+                    # Normalize weights so they sum to num_subbands (preserves average loss magnitude)
+                    self.subband_loss_weights = self.subband_loss_weights * (
+                        num_subbands / self.subband_loss_weights.sum()
+                    )
+                    console.log(f"  - Subband loss weights: {self.subband_loss_weights.tolist()}")
+                else:
+                    self.subband_loss_weights = None
+            else:
+                self.normalize_subbands = False
+                self.subband_normalizer = None
+                self.subband_loss_weights = None
+
             # Initialize noise scheduler
             num_train_timesteps = p.get("num_train_timesteps", 1000)
+            self.prediction_type = p.get("prediction_type", "epsilon")  # 'epsilon' or 'x_start'
             self.scheduler = DDPMScheduler(
                 num_train_timesteps=num_train_timesteps,
                 beta_start=p.get("beta_start", 0.0001),
                 beta_end=p.get("beta_end", 0.02),
                 beta_schedule=p.get("beta_schedule", "linear"),
+                prediction_type=self.prediction_type,
             )
             self.num_train_timesteps = num_train_timesteps
             self.inference_timesteps = p.get("inference_timesteps", 50)
@@ -341,12 +526,13 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Note: EMA is now handled by EMACallback (configured in callbacks.ema)
             # The callback will set self.ema_model at training start if enabled
 
-            self.save_hyperparameters(ignore=["model", "dwt", "idwt"])
+            self.save_hyperparameters(ignore=["model", "dwt", "idwt", "subband_normalizer"])
 
             console.log("[bold green]Wavelet Diffusion initialized:[/bold green]")
             console.log(f"  - Spatial dims: {self.spatial_dims}")
             console.log(f"  - Wavelet: {self.wavelet}")
             console.log(f"  - Apply wavelet transform: {self.apply_wavelet_transform}")
+            console.log(f"  - Normalize subbands: {self.normalize_subbands}")
             console.log(f"  - Train timesteps: {num_train_timesteps}")
 
         def _get_inference_model(self):
@@ -373,22 +559,61 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 return (x + 1.0) / 2.0
             return x
 
-        def _apply_dwt(self, x: torch.Tensor) -> torch.Tensor:
-            """Apply discrete wavelet transform and stack subbands."""
+        def _apply_dwt(self, x: torch.Tensor, update_stats: bool = True) -> torch.Tensor:
+            """Apply discrete wavelet transform and stack subbands.
+
+            Args:
+                x: Input tensor of shape (B, C, *spatial)
+                update_stats: Whether to update running statistics in normalizer
+
+            Returns:
+                Stacked (and optionally normalized) subbands
+            """
             if not self.apply_wavelet_transform:
                 return x
 
+            # Apply DWT and get subbands
             subbands = self.dwt(x)
-            # Stack subbands along channel dimension
-            return torch.cat(subbands, dim=1)
+
+            # Scale the low-frequency subband (LL/LLL) by 1/3 to balance training
+            # This allows high-frequency subbands to be trained correctly
+            # (otherwise their loss will struggle to converge due to energy imbalance)
+            if self.spatial_dims == 2:
+                # 2D: 4 subbands (LL, LH, HL, HH)
+                LL, LH, HL, HH = subbands  # noqa F806
+                stacked = torch.cat([LL / 3.0, LH, HL, HH], dim=1)
+            else:
+                # 3D: 8 subbands (LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = subbands  # noqa F806
+                stacked = torch.cat(
+                    [LLL / 3.0, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1
+                )  # noqa F806
+
+            # Apply per-subband normalization if enabled
+            if self.normalize_subbands and self.subband_normalizer is not None:
+                stacked = self.subband_normalizer.normalize(stacked, update_stats=update_stats)
+
+            return stacked
 
         def _apply_idwt(self, x: torch.Tensor) -> torch.Tensor:
-            """Split stacked subbands and apply inverse wavelet transform."""
+            """Split stacked subbands and apply inverse wavelet transform.
+
+            Args:
+                x: Stacked (and optionally normalized) subbands
+
+            Returns:
+                Reconstructed image in spatial domain
+            """
             if not self.apply_wavelet_transform:
                 return x
+
+            # Denormalize subbands before IDWT if normalization was applied
+            if self.normalize_subbands and self.subband_normalizer is not None:
+                x = self.subband_normalizer.denormalize(x)
 
             num_subbands = 4 if self.spatial_dims == 2 else 8
             subbands = torch.chunk(x, num_subbands, dim=1)
+            subbands = (subbands[0] * 3.0, *subbands[1:])  # Multiply LLL back by 3
             return self.idwt(*subbands)
 
         def on_fit_start(self):
@@ -432,11 +657,34 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
-            # Predict noise
-            noise_pred = self.forward(noisy_images, timesteps)
+            # Predict (noise or x0 depending on prediction_type)
+            model_output = self.forward(noisy_images, timesteps)
 
-            # Compute loss
-            loss = self.mse_loss(noise_pred, noise)
+            # Determine target based on prediction_type
+            if self.prediction_type == "x_start":
+                target = wavelet_images  # Model predicts clean x0
+            else:
+                target = noise  # Model predicts noise (epsilon)
+
+            # Compute loss - use per-subband weighting if enabled
+            if self.subband_loss_weights is not None and self.apply_wavelet_transform:
+                # Compute weighted per-subband MSE loss
+                num_subbands = 4 if self.spatial_dims == 2 else 8
+                weights = self.subband_loss_weights.to(self.device)
+
+                # Compute MSE per subband and apply weights
+                # Shape: [B, num_subbands, ...] -> compute MSE per subband
+                loss = 0.0
+                for i in range(num_subbands):
+                    subband_pred = model_output[:, i : i + 1]
+                    subband_target = target[:, i : i + 1]
+                    subband_mse = F.mse_loss(subband_pred, subband_target)
+                    loss = loss + weights[i] * subband_mse
+
+                # Average across subbands (weights already normalized to sum to num_subbands)
+                loss = loss / num_subbands
+            else:
+                loss = self.mse_loss(model_output, target)
 
             # Scale loss for gradient accumulation
             loss = loss / self.manual_accumulate_grad_batches
@@ -457,6 +705,45 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                     sync_dist=True,
                 )
 
+                # Log per-subband loss periodically (every 50 batches) to monitor balanced learning
+                if batch_idx % 50 == 0 and self.apply_wavelet_transform:
+                    num_subbands = 4 if self.spatial_dims == 2 else 8
+                    subband_names = (
+                        ["LL", "LH", "HL", "HH"]
+                        if self.spatial_dims == 2
+                        else ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
+                    )
+                    with torch.no_grad():
+                        # Compute per-subband MSE
+                        for i, name in enumerate(subband_names):
+                            subband_pred = model_output[:, i : i + 1]
+                            subband_target = target[:, i : i + 1]
+                            subband_mse = F.mse_loss(subband_pred, subband_target)
+                            self.log(
+                                f"train/subband_loss/{name}",
+                                subband_mse,
+                                sync_dist=True,
+                            )
+
+                # Log subband normalizer statistics periodically (every 100 batches)
+                if (
+                    self.normalize_subbands
+                    and self.subband_normalizer is not None
+                    and batch_idx % 100 == 0
+                ):
+                    stats = self.subband_normalizer.get_stats()
+                    subband_names = (
+                        ["LL", "LH", "HL", "HH"]
+                        if self.spatial_dims == 2
+                        else ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
+                    )
+                    for i, name in enumerate(subband_names):
+                        self.log(
+                            f"subband_std/{name}",
+                            stats["running_std"][i],
+                            sync_dist=True,
+                        )
+
             return {"loss": loss * self.manual_accumulate_grad_batches}
 
         def validation_step(
@@ -472,8 +759,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             images = batch["image"]
             images = self._normalize_data(images)
 
-            # Apply wavelet transform
-            wavelet_images = self._apply_dwt(images)
+            # Apply wavelet transform (don't update normalizer stats during validation)
+            wavelet_images = self._apply_dwt(images, update_stats=False)
 
             # Sample noise and timesteps
             noise = torch.randn_like(wavelet_images)
@@ -490,12 +777,36 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             # Use EMA model for validation if available (set by EMACallback)
             model = self._get_inference_model()
-            noise_pred = model(noisy_images, timesteps)
+            model_output = model(noisy_images, timesteps)
 
-            loss = self.mse_loss(noise_pred, noise)
+            # Determine target based on prediction_type
+            if self.prediction_type == "x_start":
+                target = wavelet_images  # Model predicts clean x0
+            else:
+                target = noise  # Model predicts noise (epsilon)
+
+            loss = self.mse_loss(model_output, target)
 
             if self._logging:
                 self.log("val/loss", loss, prog_bar=True, sync_dist=True)
+
+                # Log per-subband validation loss
+                if self.apply_wavelet_transform:
+                    subband_names = (
+                        ["LL", "LH", "HL", "HH"]
+                        if self.spatial_dims == 2
+                        else ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
+                    )
+                    with torch.no_grad():
+                        for i, name in enumerate(subband_names):
+                            subband_pred = model_output[:, i : i + 1]
+                            subband_target = target[:, i : i + 1]
+                            subband_mse = F.mse_loss(subband_pred, subband_target)
+                            self.log(
+                                f"val/subband_loss/{name}",
+                                subband_mse,
+                                sync_dist=True,
+                            )
 
             return {"loss": loss}
 
@@ -506,7 +817,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             should_generate = (
                 self.generate_validation_samples
-                and self.current_epoch % self.generate_frequency == 0
+                and self.current_epoch > 0  # Skip epoch 0
+                and (self.current_epoch == 1 or self.current_epoch % self.generate_frequency == 0)
             )
 
             if should_generate:
@@ -590,6 +902,34 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 # Collect for W&B logging
                 comparison = np.concatenate([orig, gen], axis=1)
                 wandb_images.append(comparison)
+
+            # Compute image-space quality metrics on generated samples
+            # Note: For unconditional generation, these measure distributional quality,
+            # not exact match (since generated != original by design)
+            try:
+                # Compute metrics on full 3D volumes (not slices)
+                with torch.no_grad():
+                    # Ensure both are in [0, 1] range for metrics
+                    gen_norm = generated.clamp(0, 1)
+                    orig_norm = images.clamp(0, 1)
+
+                    # PSNR - measures overall intensity difference
+                    psnr_val = self.psnr_metric(gen_norm, orig_norm).mean()
+
+                    # SSIM - measures structural similarity
+                    ssim_val = self.ssim_metric(gen_norm, orig_norm).mean()
+
+                    # Log without sync_dist since only rank 0 runs _generate_samples
+                    # Using sync_dist=True would cause DDP deadlock
+                    if self._logging:
+                        self.log("val/gen_psnr", psnr_val, sync_dist=False, rank_zero_only=True)
+                        self.log("val/gen_ssim", ssim_val, sync_dist=False, rank_zero_only=True)
+
+                    console.log(
+                        f"[cyan]Generation metrics: PSNR={psnr_val:.2f} dB, SSIM={ssim_val:.4f}[/cyan]"
+                    )
+            except Exception as e:
+                console.log(f"[yellow]Could not compute generation metrics: {e}[/yellow]")
 
             # Log images to W&B if available
             if self.logger is not None and hasattr(self.logger, "experiment"):

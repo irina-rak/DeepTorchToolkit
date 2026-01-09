@@ -99,4 +99,9 @@ def run_training(cfg: dict[str, Any]) -> None:
     trainer = _build_trainer(cfg, run_dir)
     trainer.logger = logger
 
-    trainer.fit(model=model, datamodule=datamodule)
+    # Support resuming from checkpoint via config
+    ckpt_path = cfg.get("ckpt_path", None)
+    if ckpt_path:
+        console.log(f"[bold cyan]Resuming from checkpoint:[/bold cyan] {ckpt_path}")
+
+    trainer.fit(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
