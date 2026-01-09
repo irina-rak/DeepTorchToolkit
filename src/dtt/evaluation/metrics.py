@@ -192,10 +192,7 @@ def compute_kid(
         fake_subset = fake_features[fake_idx]
 
         # Compute MMD
-        mmd = _compute_mmd(
-            real_subset, fake_subset,
-            degree=degree, gamma=gamma, coef0=coef0
-        )
+        mmd = _compute_mmd(real_subset, fake_subset, degree=degree, gamma=gamma, coef0=coef0)
         kid_values.append(mmd)
 
     kid_mean = float(np.mean(kid_values))
@@ -284,7 +281,8 @@ def compute_distribution_metrics(
     # Optionally compute KID
     if compute_kid_metric:
         kid_mean, kid_std = compute_kid(
-            real_features, fake_features,
+            real_features,
+            fake_features,
             num_subsets=kid_num_subsets,
             subset_size=kid_subset_size,
         )
