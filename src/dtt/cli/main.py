@@ -126,30 +126,177 @@ def infer(
             cfg_dict["data"] = {}
         cfg_dict["data"]["batch_size"] = batch_size
 
-    # Handle unconditional generation (no test data)
+    # Handle unconditional generation
+    # --no-data CLI flag overrides config, but config's use_test_data is respected by default
     if no_data:
         if "inference" not in cfg_dict:
             cfg_dict["inference"] = {}
         cfg_dict["inference"]["use_test_data"] = False
 
-        if num_batches is not None:
+    # Check if unconditional mode (either from CLI or config)
+    is_unconditional = cfg_dict.get("inference", {}).get("use_test_data", True) is False
+    
+    if num_batches is not None:
+        if is_unconditional:
+            # For unconditional mode, set num_batches in inference config
+            if "inference" not in cfg_dict:
+                cfg_dict["inference"] = {}
             cfg_dict["inference"]["num_batches"] = num_batches
+        else:
+            # For test data mode, limit number of batches via trainer
+            if "trainer" not in cfg_dict:
+                cfg_dict["trainer"] = {}
+            cfg_dict["trainer"]["limit_test_batches"] = num_batches
 
-    if num_batches is not None and not no_data:
-        # For test data mode, limit number of batches
-        if "trainer" not in cfg_dict:
-            cfg_dict["trainer"] = {}
-        cfg_dict["trainer"]["limit_test_batches"] = num_batches
-
-    # Validate config
+    # Validate config (for type checking)
     cfg = Config.model_validate(cfg_dict)
 
     # Set seed for reproducibility
     seed_everything(cfg.seed)
 
-    # Run inference
+    # Run inference - pass original dict to preserve fields like output_dir
     console.log(f"[bold cyan]Checkpoint:[/bold cyan] {checkpoint_path}")
-    run_inference(cfg.model_dump(), str(checkpoint_path))
+    run_inference(cfg_dict, str(checkpoint_path))
+
+
+@_typer_app.command()
+def evaluate(
+    config: Path | None = typer.Argument(
+        None, help="Path to evaluation config YAML file (optional)"
+    ),
+    real_dir: Path | None = typer.Option(
+        None, "--real-dir", "-r", help="Directory containing real images"
+    ),
+    fake_dir: Path | None = typer.Option(
+        None, "--fake-dir", "-f", help="Directory containing generated/fake images"
+    ),
+    spatial_dims: int | None = typer.Option(
+        None, "--spatial-dims", "-d", help="Number of spatial dimensions (2 or 3)"
+    ),
+    feature_extractor: str | None = typer.Option(
+        None,
+        "--feature-extractor",
+        "-e",
+        help="Feature extractor type: auto, inception, medicalnet",
+    ),
+    max_samples: int | None = typer.Option(
+        None, "--max-samples", "-m", help="Maximum number of samples to load"
+    ),
+    batch_size: int | None = typer.Option(
+        None, "--batch-size", "-b", help="Batch size for feature extraction"
+    ),
+    device: str | None = typer.Option(None, "--device", help="Device for computation"),
+    no_kid: bool = typer.Option(False, "--no-kid", help="Skip KID computation (FID only)"),
+    output: Path | None = typer.Option(
+        None, "--output", "-o", help="Path to save results as JSON"
+    ),
+):
+    """Evaluate generated images using FID and KID metrics.
+
+    This command computes distribution-based metrics (FID and KID) to assess
+    how similar the generated images are to real images.
+
+    You can either provide a config file OR use CLI arguments directly.
+    CLI arguments override config file values when both are provided.
+
+    Metrics:
+      - FID (Fréchet Inception Distance): Lower is better
+      - KID (Kernel Inception Distance): Lower is better, more robust for small samples
+
+    Examples:
+
+        # Using a config file
+        dtt evaluate configs/evaluation/eval_2d.yaml
+
+        # Using CLI arguments
+        dtt evaluate -r /path/to/real -f /path/to/generated
+
+        # Config file with CLI overrides
+        dtt evaluate configs/eval.yaml --max-samples 1000
+
+        # Evaluate 3D volumes
+        dtt evaluate -r /path/to/real -f /path/to/generated -d 3
+    """
+    from dtt.config.schemas import EvaluationConfig
+    from dtt.evaluation import evaluate_generated_images
+
+    console = get_console()
+
+    # Load config from file if provided
+    eval_cfg = None
+    if config is not None:
+        if not config.exists():
+            console.log(f"[bold red]Error:[/bold red] Config file not found: {config}")
+            raise typer.Exit(code=1)
+
+        cfg_dict = read_yaml(config)
+        # Check if evaluation config is nested or at root level
+        if "evaluation" in cfg_dict:
+            eval_cfg = EvaluationConfig.model_validate(cfg_dict["evaluation"])
+        else:
+            eval_cfg = EvaluationConfig.model_validate(cfg_dict)
+
+        console.log(f"[cyan]Loaded config from:[/cyan] {config}")
+
+    # Build final config from file + CLI overrides
+    final_real_dir = str(real_dir) if real_dir else (eval_cfg.real_dir if eval_cfg else None)
+    final_fake_dir = str(fake_dir) if fake_dir else (eval_cfg.fake_dir if eval_cfg else None)
+    final_spatial_dims = spatial_dims if spatial_dims else (eval_cfg.spatial_dims if eval_cfg else 2)
+    final_feature_extractor = feature_extractor if feature_extractor else (eval_cfg.feature_extractor if eval_cfg else "auto")
+    final_max_samples = max_samples if max_samples else (eval_cfg.max_samples if eval_cfg else None)
+    final_batch_size = batch_size if batch_size else (eval_cfg.batch_size if eval_cfg else 32)
+    final_device = device if device else (eval_cfg.device if eval_cfg else "cuda")
+    final_compute_kid = not no_kid if no_kid else (eval_cfg.compute_kid if eval_cfg else True)
+    final_output = str(output) if output else (eval_cfg.output_path if eval_cfg else None)
+
+    # Validate required fields
+    if not final_real_dir:
+        console.log("[bold red]Error:[/bold red] real_dir is required (use --real-dir or config file)")
+        raise typer.Exit(code=1)
+
+    if not final_fake_dir:
+        console.log("[bold red]Error:[/bold red] fake_dir is required (use --fake-dir or config file)")
+        raise typer.Exit(code=1)
+
+    # Validate directories exist
+    if not Path(final_real_dir).exists():
+        console.log(f"[bold red]Error:[/bold red] Real directory not found: {final_real_dir}")
+        raise typer.Exit(code=1)
+
+    if not Path(final_fake_dir).exists():
+        console.log(f"[bold red]Error:[/bold red] Fake directory not found: {final_fake_dir}")
+        raise typer.Exit(code=1)
+
+    if final_spatial_dims not in [2, 3]:
+        console.log(f"[bold red]Error:[/bold red] spatial_dims must be 2 or 3, got {final_spatial_dims}")
+        raise typer.Exit(code=1)
+
+    if final_feature_extractor not in ["auto", "inception", "medicalnet"]:
+        console.log(
+            f"[bold red]Error:[/bold red] Invalid feature_extractor: {final_feature_extractor}"
+        )
+        raise typer.Exit(code=1)
+
+    # Run evaluation
+    # Get target_size from config if available
+    final_target_size = eval_cfg.target_size if eval_cfg and eval_cfg.target_size else None
+    
+    try:
+        evaluate_generated_images(
+            real_dir=final_real_dir,
+            fake_dir=final_fake_dir,
+            spatial_dims=final_spatial_dims,
+            feature_extractor=final_feature_extractor,
+            max_samples=final_max_samples,
+            batch_size=final_batch_size,
+            device=final_device,
+            compute_kid=final_compute_kid,
+            output_path=final_output,
+            target_size=final_target_size,
+        )
+    except Exception as e:
+        console.log(f"[bold red]Error during evaluation:[/bold red] {e}")
+        raise typer.Exit(code=1)
 
 
 def main() -> None:

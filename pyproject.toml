@@ -56,8 +56,11 @@ generative_modeling = [
   "flow-matching>=1.0.10",
   "PyWavelets>=1.4.0",
 ]
+evaluation = [
+  "scipy>=1.10.0",
+]
 all = [
-  "deeptorchtoolkit[dev,torch,monai,generative_modeling]",
+  "deeptorchtoolkit[dev,torch,monai,generative_modeling,evaluation]",
 ]
 
 [project.scripts]
