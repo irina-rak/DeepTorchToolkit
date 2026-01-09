@@ -1,0 +1,29 @@
+# Minimal Inference Configuration for Wavelet Flow Matching
+# Model architecture is automatically loaded from checkpoint!
+# 
+# Usage: dtt infer configs/wavelet_flow_matching/wfm_inference_minimal.yaml
+
+# Checkpoint path (required) - model config loaded from here automatically
+checkpoint_path: path/to/your/checkpoint.ckpt
+
+# Global settings
+seed: 42
+output_dir: outputs
+project: wfm_generation
+run_name: generated_samples
+
+# Inference settings
+inference:
+  use_test_data: false  # Unconditional generation
+  num_batches: 10       # Generate 10 batches
+  save_comparison: false
+
+# Data settings (only batch_size needed, spatial_size comes from checkpoint)
+data:
+  batch_size: 16
+
+# Trainer settings for inference
+trainer:
+  accelerator: gpu
+  devices: [0]
+  precision: bf16-mixed
