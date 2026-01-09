@@ -93,6 +93,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
     import os
 
     import torch
+    import torch.nn.functional as F  # noqa: N812
     from flow_matching.path import AffineProbPath
     from flow_matching.path.scheduler import CondOTScheduler
     from flow_matching.solver import ODESolver
@@ -107,8 +108,6 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
     from dtt.models.wavelet_diffusion.wavelet_unet import WaveletDiffusionUNet
     from dtt.utils.logging import get_console
 
-    import torch.nn.functional as F
-
     console = get_console()
 
     class WaveletUNetWrapper(ModelWrapper):
@@ -118,7 +117,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
         - Converts flow_matching's interface: forward(x, t, **extras)
         - To WaveletDiffusionUNet's interface: forward(x, timesteps, context)
         - Rescales timesteps from [0, 1] to [0, max_timestep]
-        
+
         IMPORTANT: This wrapper does NOT apply DWT/IDWT!
         Flow matching operates entirely in wavelet space.
         DWT should be applied to data before training/inference,
@@ -184,7 +183,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             Returns:
                 Model output IN WAVELET SPACE (same shape as x)
-            
+
             IMPORTANT: DWT/IDWT should NOT be applied here!
             The flow matching operates entirely in wavelet space.
             DWT is applied before calling the solver, IDWT after generation.
@@ -260,28 +259,30 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             Returns:
                 Normalized tensor with same shape
             """
-            B = x.shape[0]
+            batch_size = x.shape[0]
             channels_per_subband = x.shape[1] // self.num_subbands
             spatial_dims = x.shape[2:]
 
             # Reshape to (B, num_subbands, C, *spatial) for per-subband stats
-            x_reshaped = x.view(B, self.num_subbands, channels_per_subband, *spatial_dims)
+            x_reshaped = x.view(batch_size, self.num_subbands, channels_per_subband, *spatial_dims)
 
             if self.training and update_stats and self.track_running_stats:
                 # Compute batch statistics (mean and std per subband)
                 # Reduce over batch, channel, and spatial dimensions
                 with torch.no_grad():
                     batch_mean = x_reshaped.mean(dim=(0, 2, *range(3, 3 + len(spatial_dims))))
-                    batch_var = x_reshaped.var(dim=(0, 2, *range(3, 3 + len(spatial_dims))), unbiased=False)
+                    batch_var = x_reshaped.var(
+                        dim=(0, 2, *range(3, 3 + len(spatial_dims))), unbiased=False
+                    )
                     batch_std = torch.sqrt(batch_var + self.eps)
 
                     # Update running stats with exponential moving average
                     self.running_mean = (
-                        (1 - self.momentum) * self.running_mean + self.momentum * batch_mean
-                    )
+                        1 - self.momentum
+                    ) * self.running_mean + self.momentum * batch_mean
                     self.running_std = (
-                        (1 - self.momentum) * self.running_std + self.momentum * batch_std
-                    )
+                        1 - self.momentum
+                    ) * self.running_std + self.momentum * batch_std
                     self.num_batches_tracked += 1
 
             # Use running stats for normalization (both training and inference)
@@ -292,7 +293,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             x_normalized = (x_reshaped - mean) / (std + self.eps)
 
             # Reshape back to (B, num_subbands*C, *spatial)
-            return x_normalized.view(B, -1, *spatial_dims)
+            return x_normalized.view(batch_size, -1, *spatial_dims)
 
         def denormalize(self, x: torch.Tensor) -> torch.Tensor:
             """Denormalize subbands back to original scale.
@@ -303,12 +304,12 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             Returns:
                 Denormalized tensor with original scale
             """
-            B = x.shape[0]
+            batch_size = x.shape[0]
             channels_per_subband = x.shape[1] // self.num_subbands
             spatial_dims = x.shape[2:]
 
             # Reshape to (B, num_subbands, C, *spatial)
-            x_reshaped = x.view(B, self.num_subbands, channels_per_subband, *spatial_dims)
+            x_reshaped = x.view(batch_size, self.num_subbands, channels_per_subband, *spatial_dims)
 
             # Apply inverse normalization using running stats
             mean = self.running_mean.view(1, self.num_subbands, 1, *([1] * len(spatial_dims)))
@@ -317,7 +318,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             x_denormalized = x_reshaped * (std + self.eps) + mean
 
             # Reshape back to (B, num_subbands*C, *spatial)
-            return x_denormalized.view(B, -1, *spatial_dims)
+            return x_denormalized.view(batch_size, -1, *spatial_dims)
 
         def get_stats(self) -> dict:
             """Get current running statistics for debugging."""
@@ -403,13 +404,19 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 num_subbands = 4 if self.spatial_dims == 2 else 8
                 default_weights_3d = [1.0, 2.0, 2.0, 3.0, 2.0, 3.0, 3.0, 4.0]
                 default_weights_2d = [1.0, 2.0, 2.0, 4.0]
-                default_weights = default_weights_2d if self.spatial_dims == 2 else default_weights_3d
+                default_weights = (
+                    default_weights_2d if self.spatial_dims == 2 else default_weights_3d
+                )
 
                 subband_loss_weights = p.get("subband_loss_weights", default_weights)
                 if subband_loss_weights is not None:
-                    self.subband_loss_weights = torch.tensor(subband_loss_weights, dtype=torch.float32)
+                    self.subband_loss_weights = torch.tensor(
+                        subband_loss_weights, dtype=torch.float32
+                    )
                     # Normalize weights so they sum to num_subbands
-                    self.subband_loss_weights = self.subband_loss_weights * (num_subbands / self.subband_loss_weights.sum())
+                    self.subband_loss_weights = self.subband_loss_weights * (
+                        num_subbands / self.subband_loss_weights.sum()
+                    )
                     console.log(f"  - Subband loss weights: {self.subband_loss_weights.tolist()}")
                 else:
                     self.subband_loss_weights = None
@@ -474,7 +481,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             The EMA model is set by EMACallback during on_fit_start if callbacks.ema
             is configured.
-            
+
             IMPORTANT: We return ema_model.module (not ema_model itself) because:
             - AveragedModel.forward() has a different signature than the wrapped model
             - The .module attribute contains the averaged weights with the original forward()
@@ -505,10 +512,10 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 return x
             else:
                 raise ValueError(f"Unknown data_range: {self.data_range}")
-        
+
         def _apply_dwt(self, x: torch.Tensor, update_stats: bool = True) -> torch.Tensor:
             """Apply discrete wavelet transform and stack subbands.
-            
+
             Args:
                 x: Input tensor [B, C, ...]
                 update_stats: Whether to update normalizer running stats (False for validation)
@@ -550,7 +557,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             # Normalize data to specified range
             images = self._normalize_data(images)
-            
+
             # Apply DWT to move to wavelet space
             if self.apply_wavelet_transform:
                 images_wavelet = self._apply_dwt(images)
@@ -697,7 +704,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             # Normalize data to specified range
             images = self._normalize_data(images)
-            
+
             # Apply DWT to move to wavelet space (don't update normalizer stats during validation)
             if self.apply_wavelet_transform:
                 images_wavelet = self._apply_dwt(images, update_stats=False)
@@ -778,8 +785,6 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             import matplotlib
 
             matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            import numpy as np
 
             console.log(
                 f"[cyan]Generating samples for epoch {self.current_epoch} "
@@ -789,13 +794,13 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             with torch.no_grad():
                 imgs_original = self._cached_val_batch["image"].to(self.device)
                 imgs = self._normalize_data(imgs_original)
-                
+
                 # Apply DWT to get wavelet space representation
                 if self.apply_wavelet_transform:
                     imgs_wavelet = self._apply_dwt(imgs)
                 else:
                     imgs_wavelet = imgs
-                
+
                 # Start from random noise IN WAVELET SPACE
                 x_init = torch.randn_like(imgs_wavelet)
 
@@ -810,7 +815,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 )
 
                 final_imgs_wavelet = sol
-                
+
                 # Apply IDWT to convert back to image space
                 if self.apply_wavelet_transform:
                     final_imgs = self._apply_idwt(final_imgs_wavelet)
@@ -934,24 +939,25 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
             """Test step: Generate samples and optionally compute metrics.
-            
+
             Supports two modes:
             - Conditional (default): Uses test data, computes PSNR/SSIM, saves comparisons
             - Unconditional: Generates from noise only, no metrics, no comparisons
-            
+
             Mode is determined by self.inference_mode set by the inference runner.
             """
             device = self.device
             is_unconditional = getattr(self, "inference_mode", "conditional") == "unconditional"
-            save_comparison = getattr(self, "inference_save_comparison", True) and not is_unconditional
-            
+            save_comparison = (
+                getattr(self, "inference_save_comparison", True) and not is_unconditional
+            )
+
             # Get batch data
             imgs_original = batch["image"].to(device)
-            batch_size = imgs_original.shape[0]
 
             # Normalize images to model's expected range
             imgs_normalized = self._normalize_data(imgs_original)
-            
+
             # Apply DWT to get wavelet space representation
             if self.apply_wavelet_transform:
                 imgs_wavelet = self._apply_dwt(imgs_normalized)
@@ -981,7 +987,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                     method=method,
                     return_intermediates=False,
                 )
-            
+
             # Apply IDWT to convert back to image space
             if self.apply_wavelet_transform:
                 generated_samples = self._apply_idwt(generated_wavelet)
@@ -1010,7 +1016,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             # Save generated samples if output directory is set
             if hasattr(self, "inference_output_dir"):
                 self._save_samples(
-                    generated_samples, 
+                    generated_samples,
                     batch_idx,
                     originals=imgs_original if save_comparison else None,
                     save_comparison=save_comparison,
@@ -1019,14 +1025,14 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             return metrics
 
         def _save_samples(
-            self, 
-            samples: torch.Tensor, 
+            self,
+            samples: torch.Tensor,
             batch_idx: int,
             originals: torch.Tensor | None = None,
             save_comparison: bool = True,
         ):
             """Save generated samples to disk.
-            
+
             Args:
                 samples: Generated samples tensor [B, C, ...]
                 batch_idx: Current batch index
@@ -1034,10 +1040,11 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 save_comparison: Whether to save side-by-side comparison images
             """
             import matplotlib
+
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import numpy as np
-            
+
             output_dir = getattr(self, "inference_output_dir", None)
             if output_dir is None:
                 return
@@ -1048,42 +1055,43 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             for i in range(samples.shape[0]):
                 sample = samples[i].cpu()
                 sample_idx = batch_idx * samples.shape[0] + i
-                
+
                 # Save as PNG image at native resolution
                 img = sample.squeeze()
                 if img.dim() == 3:  # 3D volume - take center slice
                     center = img.shape[0] // 2
                     img = img[center]
-                
+
                 # Normalize to [0, 255] for saving
                 img = (img - img.min()) / (img.max() - img.min() + 1e-8)
                 img = np.rot90(img.numpy(), k=-1)
                 img_uint8 = (img * 255).astype(np.uint8)
-                
+
                 # Save using PIL at native resolution
                 from PIL import Image
+
                 png_path = os.path.join(samples_dir, f"sample_{sample_idx:05d}.png")
-                Image.fromarray(img_uint8, mode='L').save(png_path)
-                
+                Image.fromarray(img_uint8, mode="L").save(png_path)
+
                 # Save comparison if requested and originals provided
                 if save_comparison and originals is not None:
                     orig = originals[i].cpu().squeeze()
                     if orig.dim() == 3:  # 3D
                         center = orig.shape[0] // 2
                         orig = orig[center]
-                    
+
                     orig = (orig - orig.min()) / (orig.max() - orig.min() + 1e-8)
                     orig = np.rot90(orig.numpy(), k=-1)
-                    
+
                     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
                     axes[0].imshow(orig, cmap="gray")
                     axes[0].set_title("Original")
                     axes[0].axis("off")
-                    
+
                     axes[1].imshow(img, cmap="gray")
                     axes[1].set_title("Generated")
                     axes[1].axis("off")
-                    
+
                     plt.tight_layout()
                     comparison_path = os.path.join(samples_dir, f"comparison_{sample_idx:05d}.png")
                     plt.savefig(comparison_path, bbox_inches="tight", dpi=150)
