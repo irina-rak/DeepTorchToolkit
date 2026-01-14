@@ -281,6 +281,14 @@ def evaluate(
     # Get target_size from config if available
     final_target_size = eval_cfg.target_size if eval_cfg and eval_cfg.target_size else None
     
+    # Get visualization settings from config
+    save_visualizations = eval_cfg.save_visualizations if eval_cfg else False
+    visualization_dir = eval_cfg.visualization_dir if eval_cfg else None
+    plot_tsne = eval_cfg.plot_tsne if eval_cfg else True
+    plot_sample_grid = eval_cfg.plot_sample_grid if eval_cfg else True
+    plot_histogram = eval_cfg.plot_histogram if eval_cfg else True
+    num_grid_samples = eval_cfg.num_grid_samples if eval_cfg else 16
+    
     try:
         evaluate_generated_images(
             real_dir=final_real_dir,
@@ -293,6 +301,12 @@ def evaluate(
             compute_kid=final_compute_kid,
             output_path=final_output,
             target_size=final_target_size,
+            save_visualizations=save_visualizations,
+            visualization_dir=visualization_dir,
+            plot_tsne=plot_tsne,
+            plot_sample_grid=plot_sample_grid,
+            plot_histogram=plot_histogram,
+            num_grid_samples=num_grid_samples,
         )
     except Exception as e:
         console.log(f"[bold red]Error during evaluation:[/bold red] {e}")
