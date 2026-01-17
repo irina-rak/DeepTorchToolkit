@@ -1064,7 +1064,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
                 # Normalize to [0, 255] for saving
                 img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-                img = np.rot90(img.numpy(), k=-1)
+                img = np.rot90(img.float().numpy(), k=-1)  # .float() for bf16 compatibility
                 img_uint8 = (img * 255).astype(np.uint8)
 
                 # Save using PIL at native resolution
