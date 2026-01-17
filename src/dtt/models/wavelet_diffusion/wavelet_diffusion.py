@@ -419,10 +419,20 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             if self.apply_wavelet_transform:
                 # DWT produces 4 subbands for 2D, 8 for 3D
                 num_subbands = 4 if self.spatial_dims == 2 else 8
-                base_channels = unet_config.get("in_channels", 1)
-                unet_config["in_channels"] = base_channels * num_subbands
-                unet_config["out_channels"] = base_channels * num_subbands
-                self.base_channels = base_channels
+                in_channels = unet_config.get("in_channels", 1)
+                
+                # Check if channels are already wavelet-transformed (from checkpoint reload)
+                # If in_channels is already a multiple of num_subbands and > 1, it's likely
+                # already been transformed. We store base_channels separately to detect this.
+                if in_channels == num_subbands or in_channels == num_subbands * 2:
+                    # Already transformed (e.g., 4 for 2D with 1 base channel, 8 for 3D)
+                    self.base_channels = in_channels // num_subbands
+                    console.log(f"[dim]Detected pre-transformed channels: {in_channels} -> base_channels={self.base_channels}[/dim]")
+                else:
+                    # Not yet transformed, apply multiplication
+                    self.base_channels = in_channels
+                    unet_config["in_channels"] = in_channels * num_subbands
+                    unet_config["out_channels"] = in_channels * num_subbands
             else:
                 self.base_channels = unet_config.get("in_channels", 1)
 
@@ -519,6 +529,14 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             self.generate_frequency = p.get("generate_frequency", 5)
             self.val_max_batches = p.get("val_max_batches", 3)
 
+            # Mask conditioning settings (for conditional generation)
+            # cfg_dropout_prob: probability of dropping mask during training (classifier-free guidance)
+            # guidance_scale: strength of conditioning at inference (1.0 = no guidance, higher = stronger)
+            self.mask_conditioning = unet_config.get("context_dim") is not None
+            self.cfg_dropout_prob = p.get("cfg_dropout_prob", 0.1)  # 10% dropout for CFG
+            self.guidance_scale = p.get("guidance_scale", 1.0)  # Configurable at inference
+            self.enable_cfg = p.get("enable_cfg", True)  # Option to disable CFG entirely
+
             # Store optimizer and scheduler configs
             self.optim_cfg = mcfg.optim
             self.scheduler_cfg = mcfg.scheduler
@@ -534,6 +552,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             console.log(f"  - Apply wavelet transform: {self.apply_wavelet_transform}")
             console.log(f"  - Normalize subbands: {self.normalize_subbands}")
             console.log(f"  - Train timesteps: {num_train_timesteps}")
+            if self.mask_conditioning:
+                console.log(f"  - Mask conditioning: enabled (CFG dropout={self.cfg_dropout_prob})")
 
         def _get_inference_model(self):
             """Get the model to use for inference (EMA if available, else main model).
@@ -581,12 +601,12 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             if self.spatial_dims == 2:
                 # 2D: 4 subbands (LL, LH, HL, HH)
                 LL, LH, HL, HH = subbands  # noqa F806
-                stacked = torch.cat([LL / 3.0, LH, HL, HH], dim=1)
+                stacked = torch.cat([LL, LH, HL, HH], dim=1)
             else:
                 # 3D: 8 subbands (LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH)
                 LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = subbands  # noqa F806
                 stacked = torch.cat(
-                    [LLL / 3.0, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1
+                    [LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1
                 )  # noqa F806
 
             # Apply per-subband normalization if enabled
@@ -613,7 +633,7 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             num_subbands = 4 if self.spatial_dims == 2 else 8
             subbands = torch.chunk(x, num_subbands, dim=1)
-            subbands = (subbands[0] * 3.0, *subbands[1:])  # Multiply LLL back by 3
+            subbands = (subbands[0], *subbands[1:])
             return self.idwt(*subbands)
 
         def on_fit_start(self):
@@ -657,8 +677,19 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
+            # Handle mask conditioning with classifier-free guidance dropout
+            mask = batch.get("label", None)
+            if mask is not None and self.mask_conditioning:
+                # Apply CFG dropout: randomly drop mask to enable unconditional generation
+                if self.enable_cfg and self.training:
+                    drop_mask = torch.rand(mask.shape[0], device=mask.device) < self.cfg_dropout_prob
+                    # Set mask to None for dropped samples by zeroing it out
+                    mask = mask * (~drop_mask).float().view(-1, 1, *([1] * (mask.dim() - 2)))
+            elif not self.mask_conditioning:
+                mask = None  # Ignore mask if conditioning not enabled
+
             # Predict (noise or x0 depending on prediction_type)
-            model_output = self.forward(noisy_images, timesteps)
+            model_output = self.forward(noisy_images, timesteps, mask=mask)
 
             # Determine target based on prediction_type
             if self.prediction_type == "x_start":
@@ -696,6 +727,13 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 opt.step()
                 opt.zero_grad(set_to_none=True)  # Zero gradients AFTER stepping
                 # Note: EMA update is now handled by EMACallback.on_train_batch_end()
+
+                # Manual scheduler step (required with automatic_optimization=False)
+                # Step the scheduler at the end of each epoch (when last batch is processed)
+                if is_last_batch:
+                    sch = self.lr_schedulers()
+                    if sch is not None:
+                        sch.step()
 
             if self._logging:
                 self.log(
@@ -775,9 +813,14 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
+            # Get mask for conditioning (no CFG dropout during validation)
+            mask = batch.get("label", None)
+            if not self.mask_conditioning:
+                mask = None
+
             # Use EMA model for validation if available (set by EMACallback)
             model = self._get_inference_model()
-            model_output = model(noisy_images, timesteps)
+            model_output = model(noisy_images, timesteps, mask=mask)
 
             # Determine target based on prediction_type
             if self.prediction_type == "x_start":
@@ -980,6 +1023,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             shape: tuple[int, ...],
             num_inference_steps: int | None = None,
             generator: torch.Generator | None = None,
+            mask: torch.Tensor | None = None,
+            guidance_scale: float | None = None,
         ) -> torch.Tensor:
             """Generate samples using the reverse diffusion process.
 
@@ -988,10 +1033,15 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 shape: Shape of the output (C, *spatial_dims) in wavelet space
                 num_inference_steps: Number of denoising steps (default: inference_timesteps)
                 generator: Random generator for reproducibility
+                mask: Optional conditioning mask of shape (B, mask_channels, *spatial_dims)
+                guidance_scale: CFG guidance scale (default: self.guidance_scale).
+                               1.0 = no guidance, higher = stronger conditioning
 
             Returns:
                 Generated samples in original image space
             """
+            guidance_scale = guidance_scale if guidance_scale is not None else self.guidance_scale
+
             num_inference_steps = num_inference_steps or self.inference_timesteps
             model = self._get_inference_model()
             model.eval()
@@ -1015,7 +1065,18 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             for t in timesteps:
                 # Predict noise
                 t_tensor = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
-                noise_pred = model(sample, t_tensor)
+
+                # Apply classifier-free guidance if mask provided and scale > 1
+                if mask is not None and self.mask_conditioning and guidance_scale > 1.0:
+                    # Conditional prediction (with mask)
+                    noise_pred_cond = model(sample, t_tensor, mask=mask)
+                    # Unconditional prediction (without mask)
+                    noise_pred_uncond = model(sample, t_tensor, mask=None)
+                    # CFG blending: uncond + scale * (cond - uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    # Standard prediction (with or without mask)
+                    noise_pred = model(sample, t_tensor, mask=mask)
 
                 # Denoise step
                 sample = self.scheduler.step(noise_pred, t, sample, generator=generator)
@@ -1032,47 +1093,90 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
         def test_step(
             self, batch: dict[str, torch.Tensor], batch_idx: int
         ) -> dict[str, torch.Tensor]:
-            """Test step: Generate samples and compute metrics."""
-            batch_size = batch["image"].shape[0]
+            """Test step: Generate samples and optionally compute metrics.
+
+            Supports two modes:
+            - Conditional (default): Uses test data, computes PSNR/SSIM, saves comparisons
+            - Unconditional: Generates from noise only, no metrics, no comparisons
+
+            Mode is determined by self.inference_mode set by the inference runner.
+            """
             device = self.device
-
-            # Get original images
-            imgs_original = batch["image"].to(device)
-
-            # Determine shape for generation
-            if self.spatial_dims == 2:
-                shape = (self.base_channels, *imgs_original.shape[2:])
-            else:
-                shape = (self.base_channels, *imgs_original.shape[2:])
-
-            # Generate samples
-            generated_samples = self.sample(
-                batch_size=batch_size,
-                shape=shape,
-                num_inference_steps=self.inference_timesteps,
+            is_unconditional = getattr(self, "inference_mode", "conditional") == "unconditional"
+            save_comparison = (
+                getattr(self, "inference_save_comparison", True) and not is_unconditional
             )
 
-            # Compute metrics
-            psnr = self.psnr_metric(generated_samples, imgs_original).mean()
-            ssim = self.ssim_metric(generated_samples, imgs_original).mean()
+            # Get batch data
+            imgs_original = batch["image"].to(device)
 
-            metrics = {
-                "psnr": psnr.item() if isinstance(psnr, torch.Tensor) else psnr,
-                "ssim": ssim.item() if isinstance(ssim, torch.Tensor) else ssim,
-            }
+            # Determine shape for generation from batch (use spatial dims only)
+            spatial_shape = imgs_original.shape[2:]  # Skip batch and channel dims
+            shape = (self.base_channels, *spatial_shape)
 
-            if self._logging:
-                self.log("test/psnr", metrics["psnr"], sync_dist=True)
-                self.log("test/ssim", metrics["ssim"], sync_dist=True)
+            # Get mask for conditional generation (if available)
+            mask = batch.get("label", None)
+            if mask is not None:
+                mask = mask.to(device)
+            if not self.mask_conditioning:
+                mask = None
+
+            # Generate samples (with mask conditioning if enabled)
+            generated_samples = self.sample(
+                batch_size=imgs_original.shape[0],
+                shape=shape,
+                num_inference_steps=self.inference_timesteps,
+                mask=mask,
+                guidance_scale=self.guidance_scale,
+            )
+
+            # Compute metrics only for conditional mode (when we have real images to compare)
+            metrics = {}
+            if not is_unconditional:
+                psnr = self.psnr_metric(generated_samples, imgs_original).mean()
+                ssim = self.ssim_metric(generated_samples, imgs_original).mean()
+
+                metrics = {
+                    "psnr": psnr.item() if isinstance(psnr, torch.Tensor) else psnr,
+                    "ssim": ssim.item() if isinstance(ssim, torch.Tensor) else ssim,
+                }
+
+                if self._logging:
+                    self.log("test/psnr", metrics["psnr"], sync_dist=True)
+                    self.log("test/ssim", metrics["ssim"], sync_dist=True)
 
             # Save generated samples if output directory is set
             if hasattr(self, "inference_output_dir"):
-                self._save_samples(generated_samples, batch_idx)
+                self._save_samples(
+                    generated_samples,
+                    batch_idx,
+                    originals=imgs_original if save_comparison else None,
+                    save_comparison=save_comparison,
+                )
 
             return metrics
 
-        def _save_samples(self, samples: torch.Tensor, batch_idx: int):
-            """Save generated samples to disk."""
+        def _save_samples(
+            self,
+            samples: torch.Tensor,
+            batch_idx: int,
+            originals: torch.Tensor | None = None,
+            save_comparison: bool = True,
+        ):
+            """Save generated samples to disk.
+
+            Args:
+                samples: Generated samples tensor [B, C, ...]
+                batch_idx: Current batch index
+                originals: Original images for comparison (optional)
+                save_comparison: Whether to save side-by-side comparison images
+            """
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+
             output_dir = getattr(self, "inference_output_dir", None)
             if output_dir is None:
                 return
@@ -1082,8 +1186,48 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
 
             for i in range(samples.shape[0]):
                 sample = samples[i].cpu()
-                sample_path = os.path.join(samples_dir, f"sample_batch{batch_idx}_idx{i}.pt")
-                torch.save(sample, sample_path)
+                sample_idx = batch_idx * samples.shape[0] + i
+
+                # Save as PNG image at native resolution
+                img = sample.squeeze()
+                if img.dim() == 3:  # 3D volume - take center slice
+                    center = img.shape[0] // 2
+                    img = img[center]
+
+                # Normalize to [0, 255] for saving
+                img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                img = np.rot90(img.float().numpy(), k=-1)  # .float() for bf16 compatibility
+                img_uint8 = (img * 255).astype(np.uint8)
+
+                # Save using PIL at native resolution
+                from PIL import Image
+
+                png_path = os.path.join(samples_dir, f"sample_{sample_idx:05d}.png")
+                Image.fromarray(img_uint8, mode="L").save(png_path)
+
+                # Save comparison if requested and originals provided
+                if save_comparison and originals is not None:
+                    orig = originals[i].cpu().squeeze()
+                    if orig.dim() == 3:  # 3D
+                        center = orig.shape[0] // 2
+                        orig = orig[center]
+
+                    orig = (orig - orig.min()) / (orig.max() - orig.min() + 1e-8)
+                    orig = np.rot90(orig.numpy(), k=-1)
+
+                    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+                    axes[0].imshow(orig, cmap="gray")
+                    axes[0].set_title("Original")
+                    axes[0].axis("off")
+
+                    axes[1].imshow(img, cmap="gray")
+                    axes[1].set_title("Generated")
+                    axes[1].axis("off")
+
+                    plt.tight_layout()
+                    comparison_path = os.path.join(samples_dir, f"comparison_{sample_idx:05d}.png")
+                    plt.savefig(comparison_path, bbox_inches="tight", dpi=150)
+                    plt.close()
 
         def configure_optimizers(self):
             """Configure optimizer and scheduler."""

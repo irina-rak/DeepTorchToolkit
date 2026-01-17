@@ -25,7 +25,13 @@ from torch import Tensor
 
 from dtt.models.wavelet_diffusion.dwt_idwt import DWT_2D, DWT_3D, IDWT_2D, IDWT_3D
 
-__all__ = ["WaveletDiffusionUNet", "WaveletDiffusionUNet2D", "WaveletDiffusionUNet3D"]
+__all__ = [
+    "WaveletDiffusionUNet",
+    "WaveletDiffusionUNet2D",
+    "WaveletDiffusionUNet3D",
+    "MaskEncoder",
+    "CrossAttnBlock",
+]
 
 
 def timestep_embedding(timesteps: Tensor, dim: int, max_period: int = 10000) -> Tensor:
@@ -96,11 +102,21 @@ class TimestepBlock(nn.Module):
 
 
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
-    """Sequential module that passes timestep embeddings to children that need it."""
+    """Sequential module that passes timestep embeddings and context to children.
 
-    def forward(self, x: Tensor, emb: Tensor) -> Tensor:
+    Handles three types of layers:
+    - CrossAttnBlock: receives context for mask conditioning
+    - TimestepBlock: receives timestep embedding
+    - Other layers: only receive x
+    """
+
+    def forward(
+        self, x: Tensor, emb: Tensor, context: Tensor | None = None
+    ) -> Tensor:
         for layer in self:
-            if isinstance(layer, TimestepBlock):
+            if isinstance(layer, CrossAttnBlock):
+                x = layer(x, context)
+            elif isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             else:
                 x = layer(x)
@@ -489,6 +505,144 @@ class QKVAttention(nn.Module):
         return a.reshape(bs, -1, length)
 
 
+class MaskEncoder(nn.Module):
+    """Lightweight CNN encoder for mask conditioning.
+
+    Encodes binary/soft spatial masks into context tokens for cross-attention.
+    Uses strided convolutions to downsample mask to a sequence of tokens.
+
+    Args:
+        in_channels: Number of mask input channels (1 for binary mask)
+        context_dim: Output embedding dimension for context tokens
+        dims: Spatial dimensions (2 for 2D, 3 for 3D)
+    """
+
+    def __init__(self, in_channels: int = 1, context_dim: int = 256, dims: int = 2):
+        super().__init__()
+        self.dims = dims
+        self.context_dim = context_dim
+
+        # Simple CNN encoder: mask → context tokens (4x downsampling)
+        self.encoder = nn.Sequential(
+            conv_nd(dims, in_channels, 64, 3, padding=1),
+            nn.SiLU(),
+            conv_nd(dims, 64, 128, 3, stride=2, padding=1),
+            nn.SiLU(),
+            conv_nd(dims, 128, context_dim, 3, stride=2, padding=1),
+            nn.SiLU(),
+        )
+
+    def forward(self, mask: Tensor) -> Tensor:
+        """Encode mask to context tokens.
+
+        Args:
+            mask: (B, C, *spatial) mask tensor
+
+        Returns:
+            (B, N, context_dim) context tokens for cross-attention
+        """
+        feat = self.encoder(mask)  # (B, context_dim, *spatial/4)
+        b, c, *spatial = feat.shape
+        # Flatten spatial dims to sequence: (B, C, H, W) -> (B, N, C)
+        return feat.reshape(b, c, -1).transpose(1, 2)
+
+
+class CrossAttnBlock(nn.Module):
+    """Self-attention followed by cross-attention with context.
+
+    Used for mask conditioning in the UNet. Performs:
+    1. Self-attention on feature maps (spatial attention)
+    2. Cross-attention between features (query) and context (key/value)
+
+    Args:
+        channels: Number of input/output channels
+        context_dim: Dimension of context tokens from MaskEncoder
+        num_heads: Number of attention heads
+        num_head_channels: Channels per head (-1 to use num_heads directly)
+        num_groups: Number of groups for GroupNorm
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        context_dim: int,
+        num_heads: int = 8,
+        num_head_channels: int = -1,
+        num_groups: int = 32,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.context_dim = context_dim
+
+        if num_head_channels == -1:
+            self.num_heads = num_heads
+        else:
+            if channels % num_head_channels != 0:
+                raise ValueError(
+                    f"CrossAttnBlock: channels ({channels}) must be divisible by "
+                    f"num_head_channels ({num_head_channels})."
+                )
+            self.num_heads = channels // num_head_channels
+
+        self.head_dim = channels // self.num_heads
+        self.scale = self.head_dim**-0.5
+
+        # Self-attention layers
+        self.norm1 = normalization(channels, num_groups)
+        self.qkv = nn.Linear(channels, channels * 3)
+        self.proj = zero_module(nn.Linear(channels, channels))
+
+        # Cross-attention layers
+        self.norm2 = normalization(channels, num_groups)
+        self.to_q = nn.Linear(channels, channels)
+        self.to_k = nn.Linear(context_dim, channels)
+        self.to_v = nn.Linear(context_dim, channels)
+        self.proj_cross = zero_module(nn.Linear(channels, channels))
+
+    def forward(self, x: Tensor, context: Tensor | None = None) -> Tensor:
+        """Forward pass with self-attention and optional cross-attention.
+
+        Args:
+            x: (B, C, *spatial) feature tensor
+            context: (B, N, context_dim) context tokens from MaskEncoder, or None
+
+        Returns:
+            (B, C, *spatial) output tensor
+        """
+        b, c, *spatial = x.shape
+        hw = 1
+        for s in spatial:
+            hw *= s
+
+        # 1. Self-attention
+        x_flat = x.reshape(b, c, hw).transpose(1, 2)  # (B, HW, C)
+        x_norm = self.norm1(x_flat.transpose(1, 2)).transpose(1, 2)
+
+        qkv = self.qkv(x_norm).chunk(3, dim=-1)
+        q, k, v = [
+            t.view(b, hw, self.num_heads, self.head_dim).transpose(1, 2) for t in qkv
+        ]  # (B, heads, HW, head_dim)
+
+        attn = torch.softmax(q @ k.transpose(-2, -1) * self.scale, dim=-1)
+        h = (attn @ v).transpose(1, 2).reshape(b, hw, c)  # (B, HW, C)
+        x_flat = x_flat + self.proj(h)
+
+        # 2. Cross-attention (if context provided)
+        if context is not None:
+            x_norm = self.norm2(x_flat.transpose(1, 2)).transpose(1, 2)
+            n_ctx = context.shape[1]
+
+            q = self.to_q(x_norm).view(b, hw, self.num_heads, self.head_dim).transpose(1, 2)
+            k = self.to_k(context).view(b, n_ctx, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.to_v(context).view(b, n_ctx, self.num_heads, self.head_dim).transpose(1, 2)
+
+            attn = torch.softmax(q @ k.transpose(-2, -1) * self.scale, dim=-1)
+            h = (attn @ v).transpose(1, 2).reshape(b, hw, c)
+            x_flat = x_flat + self.proj_cross(h)
+
+        return x_flat.transpose(1, 2).reshape(b, c, *spatial)
+
+
 class WaveletDiffusionUNet(nn.Module):
     """UNet for Wavelet Diffusion Models.
 
@@ -515,6 +669,8 @@ class WaveletDiffusionUNet(nn.Module):
         bottleneck_attention: Whether to use attention in bottleneck
         use_freq: Whether to use frequency-aware wavelet skip connections
         progressive_input: 'residual' to add wavelet input at each level, None to disable
+        context_dim: Dimension for mask conditioning context (None to disable)
+        mask_channels: Number of mask input channels (1 for binary mask)
     """
 
     def __init__(
@@ -538,6 +694,9 @@ class WaveletDiffusionUNet(nn.Module):
         resample_2d: bool = True,
         use_freq: bool = False,
         progressive_input: str | None = None,  # 'residual' or None
+        context_dim: int | None = None,  # None = no mask conditioning
+        mask_channels: int = 1,
+        cross_attn_heads: int | None = None,  # None = use num_heads
     ):
         super().__init__()
 
@@ -560,6 +719,8 @@ class WaveletDiffusionUNet(nn.Module):
         self.progressive_input = progressive_input
         self.resample_2d = resample_2d
         self.resblock_updown = resblock_updown
+        self.context_dim = context_dim
+        self.cross_attn_heads = cross_attn_heads if cross_attn_heads is not None else num_heads
 
         # Convert num_head_channels to list
         if isinstance(num_head_channels, list):
@@ -585,6 +746,11 @@ class WaveletDiffusionUNet(nn.Module):
         # Class embedding (optional)
         if num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+
+        # Mask encoder for conditional generation (optional)
+        self.mask_encoder = None
+        if context_dim is not None:
+            self.mask_encoder = MaskEncoder(mask_channels, context_dim, dims)
 
         # Progressive input WaveletDownsample blocks (if enabled)
         self.progressive_input_blocks = nn.ModuleList()
@@ -631,6 +797,17 @@ class WaveletDiffusionUNet(nn.Module):
                             num_groups=num_groups,
                         )
                     )
+                    # Add cross-attention for mask conditioning
+                    if context_dim is not None:
+                        layers.append(
+                            CrossAttnBlock(
+                                ch,
+                                context_dim,
+                                num_heads=self.cross_attn_heads,
+                                num_head_channels=level_head_channels,
+                                num_groups=num_groups,
+                            )
+                        )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 input_block_chans.append(ch)
 
@@ -666,7 +843,7 @@ class WaveletDiffusionUNet(nn.Module):
                 ds *= 2
 
         # Middle block
-        self.middle_block = TimestepEmbedSequential(
+        middle_layers = [
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -675,18 +852,28 @@ class WaveletDiffusionUNet(nn.Module):
                 num_groups=num_groups,
                 resample_2d=resample_2d,
             ),
-            *(
-                [
-                    AttentionBlock(
+        ]
+        if bottleneck_attention:
+            middle_layers.append(
+                AttentionBlock(
+                    ch,
+                    num_heads=num_heads,
+                    num_head_channels=self.num_head_channels_list[-1],
+                    num_groups=num_groups,
+                )
+            )
+            # Add cross-attention for mask conditioning in bottleneck
+            if context_dim is not None:
+                middle_layers.append(
+                    CrossAttnBlock(
                         ch,
-                        num_heads=num_heads,
-                        num_head_channels=self.num_head_channels_list[-1],  # Use last level
+                        context_dim,
+                        num_heads=self.cross_attn_heads,
+                        num_head_channels=self.num_head_channels_list[-1],
                         num_groups=num_groups,
                     )
-                ]
-                if bottleneck_attention
-                else []
-            ),
+                )
+        middle_layers.append(
             ResBlock(
                 ch,
                 time_embed_dim,
@@ -696,6 +883,7 @@ class WaveletDiffusionUNet(nn.Module):
                 resample_2d=resample_2d,
             ),
         )
+        self.middle_block = TimestepEmbedSequential(*middle_layers)
 
         # Decoder
         self.output_blocks = nn.ModuleList([])
@@ -740,6 +928,17 @@ class WaveletDiffusionUNet(nn.Module):
                             num_groups=num_groups,
                         )
                     )
+                    # Add cross-attention for mask conditioning
+                    if context_dim is not None:
+                        layers.append(
+                            CrossAttnBlock(
+                                mid_ch,
+                                context_dim,
+                                num_heads=self.cross_attn_heads,
+                                num_head_channels=level_head_channels,
+                                num_groups=num_groups,
+                            )
+                        )
                 ch = mid_ch
 
                 # Upsample
@@ -799,13 +998,16 @@ class WaveletDiffusionUNet(nn.Module):
 
         self.input_block_chans_bk = input_block_chans[:]
 
-    def forward(self, x: Tensor, timesteps: Tensor, y: Tensor | None = None) -> Tensor:
+    def forward(
+        self, x: Tensor, timesteps: Tensor, y: Tensor | None = None, mask: Tensor | None = None
+    ) -> Tensor:
         """Forward pass.
 
         Args:
             x: Input tensor of shape (N, C, *spatial_dims)
             timesteps: Timestep values of shape (N,)
             y: Optional class labels of shape (N,)
+            mask: Optional mask tensor of shape (N, mask_channels, *spatial_dims) for conditioning
 
         Returns:
             Output tensor of same shape as x
@@ -824,13 +1026,18 @@ class WaveletDiffusionUNet(nn.Module):
             assert y is not None and y.shape == (x.shape[0],)
             emb = emb + self.label_emb(y)
 
+        # Encode mask to context for cross-attention
+        context = None
+        if mask is not None and self.mask_encoder is not None:
+            context = self.mask_encoder(mask)
+
         # Progressive input pyramid
         input_pyramid = x
         progressive_idx = 0
 
         h = x
         for module in self.input_blocks:
-            h = module(h, emb)
+            h = module(h, emb, context)
 
             # When use_freq=True, extract and store wavelet subbands (skip) only
             # When use_freq=False, store feature maps for concatenation
@@ -854,7 +1061,7 @@ class WaveletDiffusionUNet(nn.Module):
                 h = h + input_pyramid
                 progressive_idx += 1
 
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, context)
         if isinstance(h, tuple):
             h = h[0]
 
@@ -883,11 +1090,11 @@ class WaveletDiffusionUNet(nn.Module):
             else:
                 h = torch.cat([h, new_hs], dim=1)
 
-            h = module(h, emb)
+            h = module(h, emb, context)
 
         # Output ResBlocks
         for module in self.out_res:
-            h = module(h, emb)
+            h = module(h, emb, context)
 
         # Extract from tuple if needed (like original wunet.py line 794: h, _ = h)
         if isinstance(h, tuple):

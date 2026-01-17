@@ -1,12 +1,11 @@
 """Simple smoke test for Wavelet Flow Matching implementation."""
 
 import torch
-import yaml
 from omegaconf import OmegaConf
 
 # Test 1: Module import
 print("Test 1: Module import...")
-from dtt.models.wavelet_flow_matching import build_wavelet_flow_matching
+from dtt.models.wavelet_flow_matching import build_wavelet_flow_matching  # noqa: E402
 
 print("✓ Module imported successfully")
 
@@ -43,11 +42,11 @@ with torch.no_grad():
     H_wavelet, W_wavelet = 64, 64  # Half of original 128x128
     x = torch.randn(batch_size, num_subbands, H_wavelet, W_wavelet)
     t = torch.rand(batch_size)
-    
+
     # Forward pass
     output = model.forward(x, t)
-    
-    print(f"✓ Forward pass successful")
+
+    print("✓ Forward pass successful")
     print(f"  - Input shape: {x.shape}")
     print(f"  - Output shape: {output.shape}")
     assert output.shape == x.shape, f"Shape mismatch: {output.shape} != {x.shape}"
@@ -55,20 +54,20 @@ with torch.no_grad():
 # Test 5: DWT/IDWT round-trip
 print("\nTest 5: DWT/IDWT round-trip...")
 if model.apply_wavelet_transform:
-    import torch.nn.functional as F
-    
+    import torch.nn.functional as F  # noqa: N812
+
     # Create test image
     test_img = torch.randn(1, 1, 64, 64)
-    
+
     # Apply DWT -> IDWT
     subbands = model.dwt(test_img)
     stacked = torch.cat(subbands, dim=1)
     subbands_split = torch.chunk(stacked, 4, dim=1)
     reconstructed = model.idwt(*subbands_split)
-    
+
     # Check reconstruction error
     error = F.mse_loss(reconstructed, test_img).item()
-    print(f"✓ DWT/IDWT round-trip successful")
+    print("✓ DWT/IDWT round-trip successful")
     print(f"  - Reconstruction MSE: {error:.2e}")
     assert error < 1e-6, f"Reconstruction error too high: {error}"
 else:

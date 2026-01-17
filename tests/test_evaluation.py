@@ -49,10 +49,7 @@ class TestMetrics:
         from dtt.evaluation.metrics import compute_kid
 
         features = torch.randn(200, 64)
-        kid_mean, kid_std = compute_kid(
-            features, features.clone(),
-            num_subsets=10, subset_size=50
-        )
+        kid_mean, kid_std = compute_kid(features, features.clone(), num_subsets=10, subset_size=50)
 
         # KID mean should be small for identical distributions
         assert abs(kid_mean) < 0.1, f"KID mean should be ~0, got {kid_mean}"
@@ -65,8 +62,7 @@ class TestMetrics:
         fake_features = torch.randn(200, 64) + 3.0
 
         kid_mean, kid_std = compute_kid(
-            real_features, fake_features,
-            num_subsets=10, subset_size=50
+            real_features, fake_features, num_subsets=10, subset_size=50
         )
 
         assert kid_mean > 0, "KID should be positive for different distributions"
@@ -80,10 +76,11 @@ class TestMetrics:
         fake_features = torch.randn(100, 64)
 
         results = compute_distribution_metrics(
-            real_features, fake_features,
+            real_features,
+            fake_features,
             compute_kid_metric=True,
             kid_num_subsets=5,
-            kid_subset_size=50
+            kid_subset_size=50,
         )
 
         assert "fid" in results
@@ -152,9 +149,7 @@ class TestFeatureExtractors:
 
         # Use smaller model for faster testing
         extractor = get_feature_extractor(
-            spatial_dims=3,
-            model_depth=10,
-            pretrained=False  # Skip downloading weights for testing
+            spatial_dims=3, model_depth=10, pretrained=False  # Skip downloading weights for testing
         )
         assert extractor.output_dim == 512
 
@@ -165,6 +160,7 @@ class TestImageLoading:
     def test_load_images_2d_png(self):
         """Test loading 2D PNG images."""
         from PIL import Image
+
         from dtt.evaluation.evaluate import load_images_from_directory
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -202,6 +198,7 @@ class TestImageLoading:
     def test_load_images_max_samples(self):
         """Test max_samples parameter."""
         from PIL import Image
+
         from dtt.evaluation.evaluate import load_images_from_directory
 
         with tempfile.TemporaryDirectory() as tmpdir:

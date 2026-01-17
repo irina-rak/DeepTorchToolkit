@@ -135,7 +135,7 @@ def infer(
 
     # Check if unconditional mode (either from CLI or config)
     is_unconditional = cfg_dict.get("inference", {}).get("use_test_data", True) is False
-    
+
     if num_batches is not None:
         if is_unconditional:
             # For unconditional mode, set num_batches in inference config
@@ -187,9 +187,7 @@ def evaluate(
     ),
     device: str | None = typer.Option(None, "--device", help="Device for computation"),
     no_kid: bool = typer.Option(False, "--no-kid", help="Skip KID computation (FID only)"),
-    output: Path | None = typer.Option(
-        None, "--output", "-o", help="Path to save results as JSON"
-    ),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Path to save results as JSON"),
 ):
     """Evaluate generated images using FID and KID metrics.
 
@@ -241,8 +239,14 @@ def evaluate(
     # Build final config from file + CLI overrides
     final_real_dir = str(real_dir) if real_dir else (eval_cfg.real_dir if eval_cfg else None)
     final_fake_dir = str(fake_dir) if fake_dir else (eval_cfg.fake_dir if eval_cfg else None)
-    final_spatial_dims = spatial_dims if spatial_dims else (eval_cfg.spatial_dims if eval_cfg else 2)
-    final_feature_extractor = feature_extractor if feature_extractor else (eval_cfg.feature_extractor if eval_cfg else "auto")
+    final_spatial_dims = (
+        spatial_dims if spatial_dims else (eval_cfg.spatial_dims if eval_cfg else 2)
+    )
+    final_feature_extractor = (
+        feature_extractor
+        if feature_extractor
+        else (eval_cfg.feature_extractor if eval_cfg else "auto")
+    )
     final_max_samples = max_samples if max_samples else (eval_cfg.max_samples if eval_cfg else None)
     final_batch_size = batch_size if batch_size else (eval_cfg.batch_size if eval_cfg else 32)
     final_device = device if device else (eval_cfg.device if eval_cfg else "cuda")
@@ -251,11 +255,15 @@ def evaluate(
 
     # Validate required fields
     if not final_real_dir:
-        console.log("[bold red]Error:[/bold red] real_dir is required (use --real-dir or config file)")
+        console.log(
+            "[bold red]Error:[/bold red] real_dir is required (use --real-dir or config file)"
+        )
         raise typer.Exit(code=1)
 
     if not final_fake_dir:
-        console.log("[bold red]Error:[/bold red] fake_dir is required (use --fake-dir or config file)")
+        console.log(
+            "[bold red]Error:[/bold red] fake_dir is required (use --fake-dir or config file)"
+        )
         raise typer.Exit(code=1)
 
     # Validate directories exist
@@ -268,7 +276,9 @@ def evaluate(
         raise typer.Exit(code=1)
 
     if final_spatial_dims not in [2, 3]:
-        console.log(f"[bold red]Error:[/bold red] spatial_dims must be 2 or 3, got {final_spatial_dims}")
+        console.log(
+            f"[bold red]Error:[/bold red] spatial_dims must be 2 or 3, got {final_spatial_dims}"
+        )
         raise typer.Exit(code=1)
 
     if final_feature_extractor not in ["auto", "inception", "medicalnet"]:
@@ -280,15 +290,7 @@ def evaluate(
     # Run evaluation
     # Get target_size from config if available
     final_target_size = eval_cfg.target_size if eval_cfg and eval_cfg.target_size else None
-    
-    # Get visualization settings from config
-    save_visualizations = eval_cfg.save_visualizations if eval_cfg else False
-    visualization_dir = eval_cfg.visualization_dir if eval_cfg else None
-    plot_tsne = eval_cfg.plot_tsne if eval_cfg else True
-    plot_sample_grid = eval_cfg.plot_sample_grid if eval_cfg else True
-    plot_histogram = eval_cfg.plot_histogram if eval_cfg else True
-    num_grid_samples = eval_cfg.num_grid_samples if eval_cfg else 16
-    
+
     try:
         evaluate_generated_images(
             real_dir=final_real_dir,
@@ -310,7 +312,7 @@ def evaluate(
         )
     except Exception as e:
         console.log(f"[bold red]Error during evaluation:[/bold red] {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
 
 def main() -> None:

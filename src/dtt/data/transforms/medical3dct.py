@@ -16,13 +16,11 @@ def get_train_transforms(
             CropForegroundd,
             EnsureChannelFirstd,
             LoadImaged,
-            NormalizeIntensityd,
             Orientationd,
             RandCropByPosNegLabeld,
             RandFlipd,
             RandRotated,
             ScaleIntensityRanged,
-            ScaleIntensityRangePercentilesd,
             Spacingd,
             SpatialPadd,
         )
@@ -37,7 +35,7 @@ def get_train_transforms(
             Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear", "nearest")),
             # ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
             # ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0, clip=True),
-            ScaleIntensityRanged(keys='image', a_min=-250, a_max=600, b_min=0, b_max=1, clip=True),
+            ScaleIntensityRanged(keys="image", a_min=-250, a_max=600, b_min=0, b_max=1, clip=True),
             # NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=False),
         ]
 
@@ -94,9 +92,7 @@ def get_val_transforms(
             CropForegroundd,
             EnsureChannelFirstd,
             LoadImaged,
-            NormalizeIntensityd,
             Orientationd,
-            ScaleIntensityRanged,
             ScaleIntensityRangePercentilesd,
             Spacingd,
             SpatialPadd,
@@ -111,7 +107,9 @@ def get_val_transforms(
                     keys=["image", "label"], source_key="image", margin=margin
                 ),  # crop out black borders - be careful with this
                 Spacingd(keys=["image", "label"], pixdim=pixdim, mode=("bilinear", "nearest")),
-                ScaleIntensityRangePercentilesd(keys="image", lower=0, upper=99.5, b_min=0, b_max=1),
+                ScaleIntensityRangePercentilesd(
+                    keys="image", lower=0, upper=99.5, b_min=0, b_max=1
+                ),
                 # ScaleIntensityRanged(keys=["image"], a_min=-250, a_max=600, b_min=0.0, b_max=1.0, clip=True),
                 # NormalizeIntensityd(keys=["image"], nonzero=True, channel_wise=False),
                 # RandCropByPosNegLabeld(

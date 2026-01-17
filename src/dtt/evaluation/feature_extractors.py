@@ -15,7 +15,7 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +69,8 @@ class FeatureExtractor2D(nn.Module):
             param.requires_grad = False
 
         # ImageNet normalization statistics
-        self.register_buffer(
-            "mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        )
-        self.register_buffer(
-            "std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        )
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from input images.
@@ -175,8 +171,7 @@ class FeatureExtractor3D(nn.Module):
             from monai.networks.nets import ResNet
         except ImportError as e:
             raise ImportError(
-                "MONAI is required for 3D feature extraction. "
-                "Install it with: pip install monai"
+                "MONAI is required for 3D feature extraction. " "Install it with: pip install monai"
             ) from e
 
         # Map depth to MONAI's block configuration
@@ -210,7 +205,6 @@ class FeatureExtractor3D(nn.Module):
 
         Weights are downloaded from the MedicalNet repository on first use.
         """
-        import os
         from pathlib import Path
 
         # Check for cached weights
@@ -242,13 +236,12 @@ class FeatureExtractor3D(nn.Module):
                 state_dict = state_dict["state_dict"]
 
             # Remove 'module.' prefix if present (from DataParallel training)
-            state_dict = {
-                k.replace("module.", ""): v for k, v in state_dict.items()
-            }
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
 
             # Remove classification head weights
             state_dict = {
-                k: v for k, v in state_dict.items()
+                k: v
+                for k, v in state_dict.items()
                 if not k.startswith("fc.") and not k.startswith("conv_seg.")
             }
 

@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from glob import glob
 from pathlib import Path
 from typing import Literal
@@ -136,9 +135,7 @@ def load_images_from_directory(
     image_paths = sorted(set(image_paths))
 
     if not image_paths:
-        raise ValueError(
-            f"No images found in {directory} with extensions {extensions}"
-        )
+        raise ValueError(f"No images found in {directory} with extensions {extensions}")
 
     if max_samples is not None:
         image_paths = image_paths[:max_samples]
@@ -258,11 +255,13 @@ def load_images(
         Tensor of shape (N, C, H, W) for 2D or (N, C, D, H, W) for 3D.
     """
     source_path = Path(source)
-    
+
     if source.endswith(".json") or source_path.suffix == ".json":
         return load_images_from_json(source, spatial_dims, max_samples, target_size=target_size)
     else:
-        return load_images_from_directory(source, spatial_dims, max_samples, target_size=target_size)
+        return load_images_from_directory(
+            source, spatial_dims, max_samples, target_size=target_size
+        )
 
 
 def _images_to_tensor(
@@ -452,11 +451,15 @@ def evaluate_generated_images(
         console.log(f"[cyan]Target image size:[/cyan] {target_size}")
 
     console.log(f"[cyan]Loading real images from {real_type}:[/cyan] {real_dir}")
-    real_images = load_images(real_dir, spatial_dims=spatial_dims, max_samples=max_samples, target_size=target_size)
+    real_images = load_images(
+        real_dir, spatial_dims=spatial_dims, max_samples=max_samples, target_size=target_size
+    )
     console.log(f"[green]Loaded {len(real_images)} real images[/green]")
 
     console.log(f"[cyan]Loading fake images from {fake_type}:[/cyan] {fake_dir}")
-    fake_images = load_images(fake_dir, spatial_dims=spatial_dims, max_samples=max_samples, target_size=target_size)
+    fake_images = load_images(
+        fake_dir, spatial_dims=spatial_dims, max_samples=max_samples, target_size=target_size
+    )
     console.log(f"[green]Loaded {len(fake_images)} fake images[/green]")
 
     # Get feature extractor
@@ -469,14 +472,10 @@ def evaluate_generated_images(
 
     # Extract features
     console.log("[cyan]Extracting features from real images...[/cyan]")
-    real_features = extract_features(
-        real_images, extractor, batch_size=batch_size, device=device
-    )
+    real_features = extract_features(real_images, extractor, batch_size=batch_size, device=device)
 
     console.log("[cyan]Extracting features from fake images...[/cyan]")
-    fake_features = extract_features(
-        fake_images, extractor, batch_size=batch_size, device=device
-    )
+    fake_features = extract_features(fake_images, extractor, batch_size=batch_size, device=device)
 
     # Compute metrics
     console.log("[cyan]Computing distribution metrics...[/cyan]")
@@ -488,9 +487,7 @@ def evaluate_generated_images(
     console.print("\n[bold green]═══ Evaluation Results ═══[/bold green]")
     console.print(f"  [bold]FID:[/bold] {results['fid']:.4f}")
     if compute_kid:
-        console.print(
-            f"  [bold]KID:[/bold] {results['kid_mean']:.6f} ± {results['kid_std']:.6f}"
-        )
+        console.print(f"  [bold]KID:[/bold] {results['kid_mean']:.6f} ± {results['kid_std']:.6f}")
     console.print(f"  [dim]Real samples: {results['n_real']}[/dim]")
     console.print(f"  [dim]Fake samples: {results['n_fake']}[/dim]")
     console.print("[bold green]═══════════════════════════[/bold green]\n")
