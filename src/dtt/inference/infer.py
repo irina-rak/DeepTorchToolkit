@@ -87,6 +87,7 @@ def _load_checkpoint(checkpoint_path: str, cfg: dict[str, Any]):
             user_inference = cfg.get("inference", {})
             user_output_dir = cfg.get("output_dir")
             user_batch_size = cfg.get("data", {}).get("batch_size")
+            user_json_test = cfg.get("data", {}).get("params", {}).get("json_test")
             user_trainer = cfg.get("trainer", {})
             user_project = cfg.get("project")
             user_run_name = cfg.get("run_name")
@@ -102,6 +103,11 @@ def _load_checkpoint(checkpoint_path: str, cfg: dict[str, Any]):
                 cfg["output_dir"] = user_output_dir
             if user_batch_size and "data" in cfg:
                 cfg["data"]["batch_size"] = user_batch_size
+            if user_json_test and "data" in cfg:
+                # Override json_test to use user-specified test set
+                if "params" not in cfg["data"]:
+                    cfg["data"]["params"] = {}
+                cfg["data"]["params"]["json_test"] = user_json_test
             if user_trainer:
                 cfg["trainer"] = user_trainer  # Use user's trainer config entirely
             if user_project:
@@ -232,6 +238,11 @@ def run_inference(cfg: dict[str, Any], checkpoint_path: str) -> None:
     model.inference_output_dir = output_dir
     model.inference_mode = "unconditional" if not use_test_data else "conditional"
     model.inference_save_comparison = save_comparison
+
+    # Override guidance_scale if specified in inference config (for CFG)
+    if "guidance_scale" in inference_cfg:
+        model.guidance_scale = inference_cfg["guidance_scale"]
+        console.log(f"[bold cyan]Guidance scale:[/bold cyan] {model.guidance_scale}")
 
     console.log("[bold green]Starting inference...[/bold green]")
 
