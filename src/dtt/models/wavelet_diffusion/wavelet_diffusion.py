@@ -529,6 +529,14 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             self.generate_frequency = p.get("generate_frequency", 5)
             self.val_max_batches = p.get("val_max_batches", 3)
 
+            # Mask conditioning settings (for conditional generation)
+            # cfg_dropout_prob: probability of dropping mask during training (classifier-free guidance)
+            # guidance_scale: strength of conditioning at inference (1.0 = no guidance, higher = stronger)
+            self.mask_conditioning = unet_config.get("context_dim") is not None
+            self.cfg_dropout_prob = p.get("cfg_dropout_prob", 0.1)  # 10% dropout for CFG
+            self.guidance_scale = p.get("guidance_scale", 1.0)  # Configurable at inference
+            self.enable_cfg = p.get("enable_cfg", True)  # Option to disable CFG entirely
+
             # Store optimizer and scheduler configs
             self.optim_cfg = mcfg.optim
             self.scheduler_cfg = mcfg.scheduler
@@ -544,6 +552,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             console.log(f"  - Apply wavelet transform: {self.apply_wavelet_transform}")
             console.log(f"  - Normalize subbands: {self.normalize_subbands}")
             console.log(f"  - Train timesteps: {num_train_timesteps}")
+            if self.mask_conditioning:
+                console.log(f"  - Mask conditioning: enabled (CFG dropout={self.cfg_dropout_prob})")
 
         def _get_inference_model(self):
             """Get the model to use for inference (EMA if available, else main model).
@@ -667,8 +677,19 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
+            # Handle mask conditioning with classifier-free guidance dropout
+            mask = batch.get("label", None)
+            if mask is not None and self.mask_conditioning:
+                # Apply CFG dropout: randomly drop mask to enable unconditional generation
+                if self.enable_cfg and self.training:
+                    drop_mask = torch.rand(mask.shape[0], device=mask.device) < self.cfg_dropout_prob
+                    # Set mask to None for dropped samples by zeroing it out
+                    mask = mask * (~drop_mask).float().view(-1, 1, *([1] * (mask.dim() - 2)))
+            elif not self.mask_conditioning:
+                mask = None  # Ignore mask if conditioning not enabled
+
             # Predict (noise or x0 depending on prediction_type)
-            model_output = self.forward(noisy_images, timesteps)
+            model_output = self.forward(noisy_images, timesteps, mask=mask)
 
             # Determine target based on prediction_type
             if self.prediction_type == "x_start":
@@ -792,9 +813,14 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             # Add noise
             noisy_images = self.scheduler.add_noise(wavelet_images, noise, timesteps)
 
+            # Get mask for conditioning (no CFG dropout during validation)
+            mask = batch.get("label", None)
+            if not self.mask_conditioning:
+                mask = None
+
             # Use EMA model for validation if available (set by EMACallback)
             model = self._get_inference_model()
-            model_output = model(noisy_images, timesteps)
+            model_output = model(noisy_images, timesteps, mask=mask)
 
             # Determine target based on prediction_type
             if self.prediction_type == "x_start":
@@ -997,6 +1023,8 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             shape: tuple[int, ...],
             num_inference_steps: int | None = None,
             generator: torch.Generator | None = None,
+            mask: torch.Tensor | None = None,
+            guidance_scale: float | None = None,
         ) -> torch.Tensor:
             """Generate samples using the reverse diffusion process.
 
@@ -1005,10 +1033,15 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
                 shape: Shape of the output (C, *spatial_dims) in wavelet space
                 num_inference_steps: Number of denoising steps (default: inference_timesteps)
                 generator: Random generator for reproducibility
+                mask: Optional conditioning mask of shape (B, mask_channels, *spatial_dims)
+                guidance_scale: CFG guidance scale (default: self.guidance_scale).
+                               1.0 = no guidance, higher = stronger conditioning
 
             Returns:
                 Generated samples in original image space
             """
+            guidance_scale = guidance_scale if guidance_scale is not None else self.guidance_scale
+
             num_inference_steps = num_inference_steps or self.inference_timesteps
             model = self._get_inference_model()
             model.eval()
@@ -1032,7 +1065,18 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             for t in timesteps:
                 # Predict noise
                 t_tensor = torch.full((batch_size,), t, device=self.device, dtype=torch.long)
-                noise_pred = model(sample, t_tensor)
+
+                # Apply classifier-free guidance if mask provided and scale > 1
+                if mask is not None and self.mask_conditioning and guidance_scale > 1.0:
+                    # Conditional prediction (with mask)
+                    noise_pred_cond = model(sample, t_tensor, mask=mask)
+                    # Unconditional prediction (without mask)
+                    noise_pred_uncond = model(sample, t_tensor, mask=None)
+                    # CFG blending: uncond + scale * (cond - uncond)
+                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                else:
+                    # Standard prediction (with or without mask)
+                    noise_pred = model(sample, t_tensor, mask=mask)
 
                 # Denoise step
                 sample = self.scheduler.step(noise_pred, t, sample, generator=generator)
@@ -1070,11 +1114,20 @@ def build_wavelet_diffusion(cfg: dict[str, Any]):
             spatial_shape = imgs_original.shape[2:]  # Skip batch and channel dims
             shape = (self.base_channels, *spatial_shape)
 
-            # Generate samples
+            # Get mask for conditional generation (if available)
+            mask = batch.get("label", None)
+            if mask is not None:
+                mask = mask.to(device)
+            if not self.mask_conditioning:
+                mask = None
+
+            # Generate samples (with mask conditioning if enabled)
             generated_samples = self.sample(
                 batch_size=imgs_original.shape[0],
                 shape=shape,
                 num_inference_steps=self.inference_timesteps,
+                mask=mask,
+                guidance_scale=self.guidance_scale,
             )
 
             # Compute metrics only for conditional mode (when we have real images to compare)

@@ -69,31 +69,31 @@ def build_medical2d_datamodule(cfg: dict[str, Any]):
                     get_val_transforms,
                 )
 
-                self._train = JSONCacheDataset(
-                    data_dir=json_train,
-                    cache_rate=cache_rate,
-                    num_workers=num_workers,
-                    transforms=get_train_transforms(spatial_size=spatial_size),
-                )
+                # Only load datasets needed for the current stage
+                if stage in (None, "fit"):
+                    self._train = JSONCacheDataset(
+                        data_dir=json_train,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_train_transforms(spatial_size=spatial_size),
+                    )
 
-                self._val = JSONCacheDataset(
-                    data_dir=json_val,
-                    cache_rate=cache_rate,
-                    num_workers=num_workers,
-                    transforms=get_val_transforms(spatial_size=spatial_size),
-                )
-
-                # Test dataset: use json_test if provided, otherwise reuse val
-                if json_test:
-                    self._test = JSONCacheDataset(
-                        data_dir=json_test,
+                    self._val = JSONCacheDataset(
+                        data_dir=json_val,
                         cache_rate=cache_rate,
                         num_workers=num_workers,
                         transforms=get_val_transforms(spatial_size=spatial_size),
                     )
-                else:
-                    # Reuse validation dataset as test if no test set provided
-                    self._test = self._val
+
+                if stage in ("test", "predict"):
+                    # Use test dataset if provided, otherwise fall back to val
+                    test_json = json_test if json_test else json_val
+                    self._test = JSONCacheDataset(
+                        data_dir=test_json,
+                        cache_rate=cache_rate,
+                        num_workers=num_workers,
+                        transforms=get_val_transforms(spatial_size=spatial_size),
+                    )
 
         def train_dataloader(self):  # type: ignore[override]
             from torch.utils.data import DataLoader
