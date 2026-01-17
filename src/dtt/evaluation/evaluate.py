@@ -397,6 +397,12 @@ def evaluate_generated_images(
     compute_kid: bool = True,
     output_path: str | None = None,
     target_size: tuple[int, ...] | list[int] | None = None,
+    save_visualizations: bool = False,
+    visualization_dir: str | None = None,
+    plot_tsne: bool = True,
+    plot_sample_grid: bool = True,
+    plot_histogram: bool = True,
+    num_grid_samples: int = 16,
 ) -> dict[str, float]:
     """Evaluate generated images against real images.
 
@@ -404,7 +410,8 @@ def evaluate_generated_images(
     1. Loads real and generated images from directories or JSON files
     2. Extracts features using appropriate 2D or 3D extractor
     3. Computes FID and optionally KID metrics
-    4. Optionally saves results to JSON
+    4. Optionally generates visualization plots
+    5. Optionally saves results to JSON
 
     Args:
         real_dir: Path to real images (directory OR JSON file).
@@ -417,7 +424,12 @@ def evaluate_generated_images(
         compute_kid: Whether to compute KID in addition to FID.
         output_path: Optional path to save results as JSON.
         target_size: Optional target size to resize all images (H, W) or (D, H, W).
-                     Useful when real and generated images have different resolutions.
+        save_visualizations: Whether to generate visualization plots.
+        visualization_dir: Directory for visualization plots (defaults to output_path parent).
+        plot_tsne: Whether to generate t-SNE plot.
+        plot_sample_grid: Whether to generate sample grid.
+        plot_histogram: Whether to generate intensity histogram.
+        num_grid_samples: Number of samples per side in sample grid.
 
     Returns:
         Dictionary containing evaluation metrics:
@@ -479,6 +491,33 @@ def evaluate_generated_images(
     console.print(f"  [dim]Real samples: {results['n_real']}[/dim]")
     console.print(f"  [dim]Fake samples: {results['n_fake']}[/dim]")
     console.print("[bold green]═══════════════════════════[/bold green]\n")
+
+    # Generate visualizations if requested
+    if save_visualizations:
+        from dtt.evaluation.visualize import generate_evaluation_visualizations
+        
+        # Determine visualization directory
+        if visualization_dir:
+            viz_dir = visualization_dir
+        elif output_path:
+            viz_dir = str(Path(output_path).parent / "visualizations")
+        else:
+            viz_dir = "outputs/evaluation/visualizations"
+        
+        console.log(f"[cyan]Generating visualizations in:[/cyan] {viz_dir}")
+        saved_plots = generate_evaluation_visualizations(
+            real_images=real_images,
+            fake_images=fake_images,
+            real_features=real_features,
+            fake_features=fake_features,
+            output_dir=viz_dir,
+            plot_tsne=plot_tsne,
+            plot_sample_grid=plot_sample_grid,
+            plot_histogram=plot_histogram,
+            num_grid_samples=num_grid_samples,
+        )
+        console.log(f"[green]Saved {len(saved_plots)} visualization plots[/green]")
+        results["visualizations"] = saved_plots
 
     # Save results if requested
     if output_path:

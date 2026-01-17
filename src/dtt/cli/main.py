@@ -303,6 +303,12 @@ def evaluate(
             compute_kid=final_compute_kid,
             output_path=final_output,
             target_size=final_target_size,
+            save_visualizations=save_visualizations,
+            visualization_dir=visualization_dir,
+            plot_tsne=plot_tsne,
+            plot_sample_grid=plot_sample_grid,
+            plot_histogram=plot_histogram,
+            num_grid_samples=num_grid_samples,
         )
     except Exception as e:
         console.log(f"[bold red]Error during evaluation:[/bold red] {e}")

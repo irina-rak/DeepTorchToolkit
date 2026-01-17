@@ -127,6 +127,14 @@ class EvaluationConfig(BaseModel):
     # MedicalNet-specific (for 3D)
     medicalnet_depth: int = 50  # ResNet depth: 10, 18, 34, or 50
 
+    # Visualization options
+    save_visualizations: bool = False  # Whether to generate visualization plots
+    visualization_dir: str | None = None  # Directory for plots (defaults to output_path parent)
+    plot_tsne: bool = True  # t-SNE scatter plot of features
+    plot_sample_grid: bool = True  # Side-by-side sample comparison
+    plot_histogram: bool = True  # Pixel intensity distributions
+    num_grid_samples: int = 16  # Number of samples per side in grid
+
 
 class Config(BaseModel):
     seed: int = 42
