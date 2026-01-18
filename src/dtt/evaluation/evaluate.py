@@ -403,6 +403,7 @@ def evaluate_generated_images(
     plot_sample_grid: bool = True,
     plot_histogram: bool = True,
     num_grid_samples: int = 16,
+    seed: int = 42,
 ) -> dict[str, float]:
     """Evaluate generated images against real images.
 
@@ -515,6 +516,7 @@ def evaluate_generated_images(
             plot_sample_grid=plot_sample_grid,
             plot_histogram=plot_histogram,
             num_grid_samples=num_grid_samples,
+            seed=seed,
         )
         console.log(f"[green]Saved {len(saved_plots)} visualization plots[/green]")
         results["visualizations"] = saved_plots

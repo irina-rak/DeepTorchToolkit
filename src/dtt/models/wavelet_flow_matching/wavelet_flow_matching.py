@@ -1015,11 +1015,14 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
 
             # Save generated samples if output directory is set
             if hasattr(self, "inference_output_dir"):
+                # Get original filenames for paired evaluation
+                names = batch.get("name", None)
                 self._save_samples(
                     generated_samples,
                     batch_idx,
                     originals=imgs_original if save_comparison else None,
                     save_comparison=save_comparison,
+                    names=names,
                 )
 
             return metrics
@@ -1030,6 +1033,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
             batch_idx: int,
             originals: torch.Tensor | None = None,
             save_comparison: bool = True,
+            names: list[str] | None = None,
         ):
             """Save generated samples to disk.
 
@@ -1038,6 +1042,7 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 batch_idx: Current batch index
                 originals: Original images for comparison (optional)
                 save_comparison: Whether to save side-by-side comparison images
+                names: Original filenames for paired evaluation (optional)
             """
             import matplotlib
 
@@ -1067,10 +1072,19 @@ def build_wavelet_flow_matching(cfg: dict[str, Any]):
                 img = np.rot90(img.float().numpy(), k=-1)  # .float() for bf16 compatibility
                 img_uint8 = (img * 255).astype(np.uint8)
 
+                # Determine filename: use original name if available, else index
+                if names is not None and i < len(names):
+                    # Extract basename without extension from original path
+                    from pathlib import Path
+                    original_name = Path(names[i]).stem
+                    filename = original_name
+                else:
+                    filename = f"sample_{sample_idx:05d}"
+
                 # Save using PIL at native resolution
                 from PIL import Image
 
-                png_path = os.path.join(samples_dir, f"sample_{sample_idx:05d}.png")
+                png_path = os.path.join(samples_dir, f"{filename}.png")
                 Image.fromarray(img_uint8, mode="L").save(png_path)
 
                 # Save comparison if requested and originals provided

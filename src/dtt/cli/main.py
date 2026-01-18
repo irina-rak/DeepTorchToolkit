@@ -290,6 +290,15 @@ def evaluate(
     # Run evaluation
     # Get target_size from config if available
     final_target_size = eval_cfg.target_size if eval_cfg and eval_cfg.target_size else None
+    
+    # Get visualization settings from config
+    save_visualizations = eval_cfg.save_visualizations if eval_cfg else False
+    visualization_dir = eval_cfg.visualization_dir if eval_cfg else None
+    plot_tsne = eval_cfg.plot_tsne if eval_cfg else True
+    plot_sample_grid = eval_cfg.plot_sample_grid if eval_cfg else True
+    plot_histogram = eval_cfg.plot_histogram if eval_cfg else True
+    num_grid_samples = eval_cfg.num_grid_samples if eval_cfg else 16
+    seed = eval_cfg.seed if eval_cfg else 42
 
     try:
         evaluate_generated_images(
@@ -309,7 +318,35 @@ def evaluate(
             plot_sample_grid=plot_sample_grid,
             plot_histogram=plot_histogram,
             num_grid_samples=num_grid_samples,
+            seed=seed,
         )
+        
+        # Compute paired metrics if enabled (for conditional generation)
+        compute_paired = eval_cfg.compute_paired if eval_cfg else False
+        if compute_paired:
+            from dtt.evaluation.paired_metrics import evaluate_paired_images
+            
+            console.print("\n[bold cyan]═══ Paired Metrics (Conditional) ═══[/bold cyan]")
+            compute_ssim_flag = eval_cfg.compute_ssim if eval_cfg else True
+            compute_lpips_flag = eval_cfg.compute_lpips if eval_cfg else True
+            
+            # Determine output path for paired metrics
+            paired_output = None
+            if final_output:
+                paired_output = str(Path(final_output).parent / "paired_metrics.json")
+            
+            evaluate_paired_images(
+                real_dir=final_real_dir,
+                fake_dir=final_fake_dir,
+                spatial_dims=final_spatial_dims,
+                compute_ssim_metric=compute_ssim_flag,
+                compute_lpips_metric=compute_lpips_flag,
+                device=final_device,
+                target_size=tuple(final_target_size) if final_target_size else None,
+                output_path=paired_output,
+            )
+            console.print("[bold cyan]═════════════════════════════════════[/bold cyan]\n")
+            
     except Exception as e:
         console.log(f"[bold red]Error during evaluation:[/bold red] {e}")
         raise typer.Exit(code=1) from e

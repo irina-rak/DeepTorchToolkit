@@ -630,6 +630,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "lightning" },
+    { name = "lpips" },
     { name = "matplotlib" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -638,8 +639,6 @@ dependencies = [
     { name = "pillow" },
     { name = "pydantic" },
     { name = "rich" },
-    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "typer" },
     { name = "wandb" },
 ]
@@ -659,6 +658,8 @@ all = [
     { name = "pywavelets", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pywavelets", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "ruff" },
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "torch" },
@@ -675,6 +676,8 @@ dev = [
     { name = "types-pyyaml" },
 ]
 evaluation = [
+    { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scikit-learn", version = "1.8.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -701,6 +704,7 @@ requires-dist = [
     { name = "einops", marker = "extra == 'monai'", specifier = ">=0.8.1" },
     { name = "flow-matching", marker = "extra == 'generative-modeling'", specifier = ">=1.0.10" },
     { name = "lightning", specifier = ">=2.4.0" },
+    { name = "lpips", specifier = ">=0.1.4" },
     { name = "lpips", marker = "extra == 'monai'", specifier = ">=0.1.4" },
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "monai", marker = "extra == 'monai'", specifier = ">=1.4.0" },
@@ -717,7 +721,7 @@ requires-dist = [
     { name = "pywavelets", marker = "extra == 'generative-modeling'", specifier = ">=1.4.0" },
     { name = "rich", specifier = ">=13.7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "scikit-learn", specifier = ">=1.7.2" },
+    { name = "scikit-learn", marker = "extra == 'evaluation'", specifier = ">=1.7.2" },
     { name = "scipy", marker = "extra == 'evaluation'", specifier = ">=1.10.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
     { name = "torchvision", marker = "extra == 'torch'", specifier = ">=0.17" },

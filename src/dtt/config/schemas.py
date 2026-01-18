@@ -135,6 +135,14 @@ class EvaluationConfig(BaseModel):
     plot_histogram: bool = True  # Pixel intensity distributions
     num_grid_samples: int = 16  # Number of samples per side in grid
 
+    # Paired metrics (for conditional generation)
+    compute_paired: bool = False  # Enable paired SSIM/LPIPS metrics
+    compute_ssim: bool = True  # Compute SSIM (requires paired)
+    compute_lpips: bool = True  # Compute LPIPS (requires paired, 2D only)
+
+    # Reproducibility
+    seed: int = 42  # Seed for reproducible subsampling in visualizations
+
 
 class Config(BaseModel):
     seed: int = 42

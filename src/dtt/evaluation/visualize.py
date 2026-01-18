@@ -272,6 +272,7 @@ def generate_evaluation_visualizations(
     plot_sample_grid: bool = True,
     plot_histogram: bool = True,
     num_grid_samples: int = 16,
+    seed: int = 42,
 ) -> dict[str, str]:
     """Generate all evaluation visualizations.
 
@@ -285,10 +286,14 @@ def generate_evaluation_visualizations(
         plot_sample_grid: Whether to generate sample grid.
         plot_histogram: Whether to generate intensity histogram.
         num_grid_samples: Number of samples per side in grid.
+        seed: Random seed for reproducible subsampling.
 
     Returns:
         Dictionary mapping plot names to file paths.
     """
+    # Set seed for reproducibility
+    np.random.seed(seed)
+    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     

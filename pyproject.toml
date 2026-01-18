@@ -59,6 +59,7 @@ generative_modeling = [
 evaluation = [
   "scipy>=1.10.0",
   "scikit-learn>=1.7.2",
+  "lpips>=0.1.4",
 ]
 all = [
   "deeptorchtoolkit[dev,torch,monai,generative_modeling,evaluation]",
